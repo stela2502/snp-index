@@ -11,6 +11,8 @@ use scdata::feature_index::FeatureIndex;
 use std::collections::HashMap;
 use std::path::Path;
 
+use std::fmt;
+
 use crate::AlignedRead;
 
 /// Default genomic bin width.
@@ -517,6 +519,40 @@ impl SnpIndex {
         value.div_ceil(denominator)
     }
 }
+
+
+
+impl fmt::Display for SnpIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        writeln!(f, "SnpIndex")?;
+        writeln!(f, "  chromosomes: {}", self.chr_names.len())?;
+        
+        let total: usize = self
+            .bins
+            .iter()
+            .map(|chr| chr.iter().map(|b| b.len()).sum::<usize>())
+            .sum();
+
+        writeln!(f, "  total SNPs: {total}")?;
+
+        // Optional: per chromosome summary (only first few)
+        for (i, name) in self.chr_names.iter().enumerate().take(5) {
+            let count: usize = self.bins[i]
+                .iter()
+                .map(|b| b.len())
+                .sum();
+
+            writeln!(f, "    {name}: {count}")?;
+        }
+
+        if self.chr_names.len() > 5 {
+            writeln!(f, "    ...")?;
+        }
+
+        Ok(())
+    }
+}
+
 
 #[cfg(test)]
 mod tests {
