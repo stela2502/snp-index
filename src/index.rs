@@ -318,10 +318,32 @@ impl SnpIndex {
 
     /// Build a chromosome name to chromosome id lookup.
     pub fn build_chr_map(chr_names: &[String]) -> HashMap<String, usize> {
-        let mut map = HashMap::with_capacity(chr_names.len());
+        let mut map = HashMap::with_capacity(chr_names.len() * 3);
 
         for (chr_id, name) in chr_names.iter().enumerate() {
-            map.insert(name.clone(), chr_id);
+            map.entry(name.clone()).or_insert(chr_id);
+
+            if let Some(no_chr) = name.strip_prefix("chr") {
+                map.entry(no_chr.to_string()).or_insert(chr_id);
+            } else {
+                map.entry(format!("chr{name}")).or_insert(chr_id);
+            }
+
+            match name.as_str() {
+                "MT" => {
+                    map.entry("chrM".to_string()).or_insert(chr_id);
+                    map.entry("M".to_string()).or_insert(chr_id);
+                }
+                "chrM" => {
+                    map.entry("MT".to_string()).or_insert(chr_id);
+                    map.entry("M".to_string()).or_insert(chr_id);
+                }
+                "M" => {
+                    map.entry("MT".to_string()).or_insert(chr_id);
+                    map.entry("chrM".to_string()).or_insert(chr_id);
+                }
+                _ => {}
+            }
         }
 
         map
@@ -499,44 +521,19 @@ impl SnpIndex {
         Ok(bin_starts)
     }
 
-    /// Build a chromosome-name lookup table with common aliases.
-    ///
-    /// The stored chromosome ids remain the BAM/header-native ids.
-    /// This only makes VCF import tolerant to `chr1` vs `1` and mito aliases.
-    pub fn build_chr_name_to_id(chr_names: &[String]) -> HashMap<String, usize> {
-        let mut map = HashMap::with_capacity(chr_names.len() * 3);
+    /// Build a feature-name lookup table.
+    pub fn build_name_to_id(loci: &[SnpLocus]) -> Result<HashMap<String, u64>> {
+        let mut map = HashMap::with_capacity(loci.len());
 
-        for (chr_id, name) in chr_names.iter().enumerate() {
-            let previous = map.entry(name.clone()).or_insert(chr_id);
-            
+        for locus in loci {
+            let previous = map.insert(locus.name.clone(), locus.id as u64);
+
             if previous.is_some() {
                 return Err(anyhow!("duplicate SNP feature name: {}", locus.name));
             }
-
-            if let Some(no_chr) = name.strip_prefix("chr") {
-                map.entry(no_chr.to_string()).or_insert(chr_id);
-            } else {
-                map.entry(format!("chr{name}")).or_insert(chr_id);
-            }
-
-            match name.as_str() {
-                "MT" => {
-                    map.entry("chrM".to_string()).or_insert(chr_id);
-                    map.entry("M".to_string()).or_insert(chr_id);
-                }
-                "chrM" => {
-                    map.entry("MT".to_string()).or_insert(chr_id);
-                    map.entry("M".to_string()).or_insert(chr_id);
-                }
-                "M" => {
-                    map.entry("MT".to_string()).or_insert(chr_id);
-                    map.entry("chrM".to_string()).or_insert(chr_id);
-                }
-                _ => {}
-            }
         }
 
-        map
+        Ok(map)
     }
 
     /// Integer ceiling division for positive denominator.
