@@ -521,31 +521,42 @@ impl SnpIndex {
 }
 
 
+impl SnpIndex {
+
+
+    pub fn snps_on_chr(&self, chr_id: usize) -> usize {
+        if chr_id >= self.chr_bin_offsets.len() {
+            return 0;
+        }
+
+        let start_bin = self.chr_bin_offsets[chr_id];
+        let n_bins = self.chr_bin_counts[chr_id];
+        let end_bin = start_bin + n_bins;
+
+        self.bin_starts[end_bin] - self.bin_starts[start_bin]
+    }
+}
 
 impl fmt::Display for SnpIndex {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         writeln!(f, "SnpIndex")?;
         writeln!(f, "  chromosomes: {}", self.chr_names.len())?;
-        
-        let total: usize = self
-            .bins
-            .iter()
-            .map(|chr| chr.iter().map(|b| b.len()).sum::<usize>())
-            .sum();
+        writeln!(f, "  loci: {}", self.loci.len())?;
+        writeln!(f, "  bin_width: {}", self.bin_width)?;
+        writeln!(f, "  global_bins: {}", self.bin_starts.len().saturating_sub(1))?;
 
-        writeln!(f, "  total SNPs: {total}")?;
-
-        // Optional: per chromosome summary (only first few)
-        for (i, name) in self.chr_names.iter().enumerate().take(5) {
-            let count: usize = self.bins[i]
-                .iter()
-                .map(|b| b.len())
-                .sum();
-
-            writeln!(f, "    {name}: {count}")?;
+        for (chr_id, chr_name) in self.chr_names.iter().enumerate().take(10) {
+            writeln!(
+                f,
+                "    {}: {} SNPs, {} bins, length {}",
+                chr_name,
+                self.snps_on_chr(chr_id),
+                self.chr_bin_counts.get(chr_id).copied().unwrap_or(0),
+                self.chr_lengths.get(chr_id).copied().unwrap_or(0),
+            )?;
         }
 
-        if self.chr_names.len() > 5 {
+        if self.chr_names.len() > 10 {
             writeln!(f, "    ...")?;
         }
 
