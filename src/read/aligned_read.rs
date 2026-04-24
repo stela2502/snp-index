@@ -5,9 +5,9 @@
 //! BAM records (`rust-htslib`), it is designed to act as a stable intermediate
 //! representation for downstream processing (e.g. SNP matching, refinement).
 
-use rust_htslib::bam::record::{Cigar, CigarStringView};
-use rust_htslib::bam::Record;
 use gtf_splice_index::types::RefBlock;
+use rust_htslib::bam::Record;
+use rust_htslib::bam::record::{Cigar, CigarStringView};
 
 /// Read strand/orientation.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -283,13 +283,14 @@ impl AlignedRead {
     /// Validate sequence, quality, and operation consistency.
     pub fn validate(&self) -> Result<(), String> {
         if let Some(qual) = &self.qual
-            && qual.len() != self.seq.len() {
-                return Err(format!(
-                    "quality length ({}) does not match sequence length ({})",
-                    qual.len(),
-                    self.seq.len()
-                ));
-            }
+            && qual.len() != self.seq.len()
+        {
+            return Err(format!(
+                "quality length ({}) does not match sequence length ({})",
+                qual.len(),
+                self.seq.len()
+            ));
+        }
 
         let expected = self.read_len_from_ops() as usize;
         if expected != self.seq.len() {
@@ -372,7 +373,6 @@ impl AlignedRead {
 mod tests {
     use super::*;
     use gtf_splice_index::types::RefBlock;
-
 
     impl AlignedRead {
         fn simple_read() -> Self {

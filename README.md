@@ -1,3 +1,5 @@
+[![Rust](https://github.com/stela2502/snp-index/actions/workflows/rust.yml/badge.svg)](https://github.com/stela2502/snp-index/actions/workflows/rust.yml)
+
 # snp-index
 
 A lightweight, high-performance Rust crate for SNP-aware read matching and sparse matrix generation.

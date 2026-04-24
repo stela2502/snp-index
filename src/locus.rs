@@ -111,14 +111,7 @@ mod tests {
 
     #[test]
     fn new_creates_locus() {
-        let locus = SnpLocus::new(
-            7,
-            1,
-            100,
-            b'A',
-            vec![b'G'],
-            "chr2:101:A>G".to_string(),
-        );
+        let locus = SnpLocus::new(7, 1, 100, b'A', vec![b'G'], "chr2:101:A>G".to_string());
 
         assert_eq!(locus.id, 7);
         assert_eq!(locus.chr_id, 1);
@@ -195,14 +188,7 @@ mod tests {
 
     #[test]
     fn allele_checks_are_case_insensitive() {
-        let locus = SnpLocus::new(
-            0,
-            0,
-            10,
-            b'C',
-            vec![b'A', b'T'],
-            "snp".to_string(),
-        );
+        let locus = SnpLocus::new(0, 0, 10, b'C', vec![b'A', b'T'], "snp".to_string());
 
         assert!(locus.is_reference_base(b'C'));
         assert!(locus.is_reference_base(b'c'));

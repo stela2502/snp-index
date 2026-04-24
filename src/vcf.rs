@@ -139,11 +139,7 @@ impl SnpVcfReader {
     pub fn record_pos0(record: &bcf::Record) -> Option<u32> {
         let pos = record.pos();
 
-        if pos < 0 {
-            None
-        } else {
-            Some(pos as u32)
-        }
+        if pos < 0 { None } else { Some(pos as u32) }
     }
 
     /// Parse REF and ALT alleles according to the supplied options.
@@ -152,10 +148,7 @@ impl SnpVcfReader {
     /// - REF must have length 1
     /// - every ALT must have length 1
     /// - all bases must be A/C/G/T
-    pub fn parse_alleles(
-        alleles: &[&[u8]],
-        options: &VcfReadOptions,
-    ) -> Option<(u8, Vec<u8>)> {
+    pub fn parse_alleles(alleles: &[&[u8]], options: &VcfReadOptions) -> Option<(u8, Vec<u8>)> {
         if alleles.len() < 2 {
             return None;
         }
@@ -227,21 +220,18 @@ impl SnpVcfReader {
     ) -> String {
         let id = record.id();
 
-        if !id.is_empty() && id != b"."
-            && let Ok(id_string) = std::str::from_utf8(&id) {
-                return id_string.to_string();
-            }
+        if !id.is_empty()
+            && id != b"."
+            && let Ok(id_string) = std::str::from_utf8(&id)
+        {
+            return id_string.to_string();
+        }
 
         Self::fallback_name(chr_name, pos0, reference, alternates)
     }
 
     /// Build a coordinate/allele fallback name.
-    pub fn fallback_name(
-        chr_name: &str,
-        pos0: u32,
-        reference: u8,
-        alternates: &[u8],
-    ) -> String {
+    pub fn fallback_name(chr_name: &str, pos0: u32, reference: u8, alternates: &[u8]) -> String {
         let pos1 = pos0 + 1;
         let alt_string = alternates.iter().map(|b| *b as char).collect::<String>();
 

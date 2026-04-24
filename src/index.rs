@@ -6,10 +6,10 @@
 
 use crate::locus::SnpLocus;
 use crate::vcf::{SnpVcfReader, VcfReadOptions};
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
+use scdata::feature_index::FeatureIndex;
 use std::collections::HashMap;
 use std::path::Path;
-use scdata::feature_index::FeatureIndex;
 
 use crate::AlignedRead;
 
@@ -34,7 +34,6 @@ pub struct SnpReadMatch {
     pub ref_ids: Vec<u32>,
     pub alt_ids: Vec<u32>,
 }
-
 
 /// A flat, chromosome-aware SNP index.
 ///
@@ -69,7 +68,6 @@ pub struct SnpIndex {
     pub name_to_id: HashMap<String, u64>,
 }
 
-
 impl FeatureIndex for SnpIndex {
     /// id to name translation
     fn feature_name(&self, feature_id: u64) -> &str {
@@ -88,11 +86,7 @@ impl FeatureIndex for SnpIndex {
     fn to_10x_feature_line(&self, feature_id: u64) -> String {
         let locus = &self.loci[feature_id as usize];
 
-        format!(
-            "{}\t{}\tSNP",
-            locus.name,
-            locus.name
-        )
+        format!("{}\t{}\tSNP", locus.name, locus.name)
     }
 
     /// Export SNPs in feature-id order.
@@ -169,9 +163,10 @@ impl SnpIndex {
                 };
 
                 if let Some(q) = obs.qual
-                    && q < min_baseq {
-                        continue;
-                    }
+                    && q < min_baseq
+                {
+                    continue;
+                }
 
                 if locus.is_reference_base(obs.base) {
                     hits.ref_ids.push(locus.id as u32);
@@ -209,11 +204,8 @@ impl SnpIndex {
         let mut loci = Self::sort_and_reassign_loci(loci);
         Self::validate_loci_against_genome(&loci, &self.chr_lengths)?;
 
-        let old_to_new = Self::build_loci_order_by_bin(
-            &loci,
-            &self.chr_bin_offsets,
-            self.bin_width,
-        )?;
+        let old_to_new =
+            Self::build_loci_order_by_bin(&loci, &self.chr_bin_offsets, self.bin_width)?;
 
         loci = Self::reorder_loci_by_indices(loci, &old_to_new);
         Self::reassign_locus_ids_in_place(&mut loci);
@@ -532,14 +524,7 @@ mod tests {
 
     impl SnpIndex {
         fn test_locus(chr_id: usize, pos0: u32, name: &str) -> SnpLocus {
-            SnpLocus::new(
-                999,
-                chr_id,
-                pos0,
-                b'C',
-                vec![b'T'],
-                name.to_string(),
-            )
+            SnpLocus::new(999, chr_id, pos0, b'C', vec![b'T'], name.to_string())
         }
     }
 
@@ -668,12 +653,18 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            index.global_bins_for_span(0, 50, 250).unwrap().collect::<Vec<_>>(),
+            index
+                .global_bins_for_span(0, 50, 250)
+                .unwrap()
+                .collect::<Vec<_>>(),
             vec![0, 1, 2]
         );
 
         assert_eq!(
-            index.global_bins_for_span(1, 50, 250).unwrap().collect::<Vec<_>>(),
+            index
+                .global_bins_for_span(1, 50, 250)
+                .unwrap()
+                .collect::<Vec<_>>(),
             vec![10, 11, 12]
         );
 

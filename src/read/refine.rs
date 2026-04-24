@@ -109,11 +109,7 @@ impl AlignedRead {
                 && ops[i + 2].kind == ReadOpKind::Diff
                 && ops[i + 2].len <= options.max_diff_after_refskip
                 && Self::is_aligned_kind(ops[i + 3].kind)
-                && self.diff_matches_reference_at_target(
-                    genome,
-                    &ops[i + 2],
-                    ops[i].ref_end0(),
-                )
+                && self.diff_matches_reference_at_target(genome, &ops[i + 2], ops[i].ref_end0())
             {
                 out.push((ops[i].kind, ops[i].len + ops[i + 2].len));
                 out.push((ops[i + 1].kind, ops[i + 1].len));
@@ -170,10 +166,12 @@ impl AlignedRead {
     }
 
     pub fn is_aligned_kind(kind: ReadOpKind) -> bool {
-        matches!(kind, ReadOpKind::Match | ReadOpKind::Equal | ReadOpKind::Diff)
+        matches!(
+            kind,
+            ReadOpKind::Match | ReadOpKind::Equal | ReadOpKind::Diff
+        )
     }
 }
-
 
 #[cfg(test)]
 mod tests {
@@ -244,7 +242,6 @@ mod tests {
         assert_eq!(obs.read_pos, 10);
     }
 
-
     #[test]
     fn diff_before_refskip_is_preserved_if_it_is_real_mutation_not_second_exon_base() {
         let genome = Genome::synthetic_splice_genome();
@@ -275,7 +272,6 @@ mod tests {
         assert_eq!(mutation.base, b'T');
         assert_eq!(mutation.read_pos, 10);
     }
-
 
     #[test]
     fn diff_after_refskip_is_preserved_if_it_is_not_left_exon_reference() {

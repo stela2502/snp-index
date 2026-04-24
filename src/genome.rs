@@ -21,74 +21,68 @@ pub struct Genome {
 }
 
 impl Genome {
-/// Read a plain or gzip-compressed FASTA file into memory.
-///
-/// Supports:
-/// - `.fa` / `.fasta`
-/// - `.fa.gz` / `.fasta.gz`
-pub fn from_fasta<P: AsRef<Path>>(path: P) -> Result<Self> {
-    let path_ref = path.as_ref();
-    let reader = Self::open_fasta_reader(path_ref)?;
+    /// Read a plain or gzip-compressed FASTA file into memory.
+    ///
+    /// Supports:
+    /// - `.fa` / `.fasta`
+    /// - `.fa.gz` / `.fasta.gz`
+    pub fn from_fasta<P: AsRef<Path>>(path: P) -> Result<Self> {
+        let path_ref = path.as_ref();
+        let reader = Self::open_fasta_reader(path_ref)?;
 
-    let mut records: Vec<(String, Vec<u8>)> = Vec::new();
-    let mut current_name: Option<String> = None;
-    let mut current_seq: Vec<u8> = Vec::new();
+        let mut records: Vec<(String, Vec<u8>)> = Vec::new();
+        let mut current_name: Option<String> = None;
+        let mut current_seq: Vec<u8> = Vec::new();
 
-    for line_result in reader.lines() {
-        let line = line_result
-            .with_context(|| format!("failed to read FASTA line from {}", path_ref.display()))?;
+        for line_result in reader.lines() {
+            let line = line_result.with_context(|| {
+                format!("failed to read FASTA line from {}", path_ref.display())
+            })?;
 
-        if let Some(rest) = line.strip_prefix('>') {
-            if let Some(name) = current_name.take() {
-                records.push((name, std::mem::take(&mut current_seq)));
+            if let Some(rest) = line.strip_prefix('>') {
+                if let Some(name) = current_name.take() {
+                    records.push((name, std::mem::take(&mut current_seq)));
+                }
+
+                let name = rest.split_whitespace().next().unwrap_or("").to_string();
+
+                if name.is_empty() {
+                    anyhow::bail!("empty FASTA record name");
+                }
+
+                current_name = Some(name);
+            } else if !line.trim().is_empty() {
+                current_seq.extend(line.trim().as_bytes());
             }
+        }
 
-            let name = rest
-                .split_whitespace()
-                .next()
-                .unwrap_or("")
-                .to_string();
+        if let Some(name) = current_name.take() {
+            records.push((name, current_seq));
+        }
 
-            if name.is_empty() {
-                anyhow::bail!("empty FASTA record name");
-            }
+        if records.is_empty() {
+            anyhow::bail!("FASTA file contains no records: {}", path_ref.display());
+        }
 
-            current_name = Some(name);
-        } else if !line.trim().is_empty() {
-            current_seq.extend(line.trim().as_bytes());
+        Self::new(records)
+    }
+
+    /// Open plain or gzip-compressed FASTA as a buffered reader.
+    fn open_fasta_reader<P: AsRef<Path>>(path: P) -> Result<Box<dyn BufRead>> {
+        let path_ref = path.as_ref();
+
+        let file = File::open(path_ref)
+            .with_context(|| format!("failed to open FASTA file {}", path_ref.display()))?;
+
+        let is_gz = path_ref.extension().map(|ext| ext == "gz").unwrap_or(false);
+
+        if is_gz {
+            let decoder = MultiGzDecoder::new(file);
+            Ok(Box::new(BufReader::new(decoder)))
+        } else {
+            Ok(Box::new(BufReader::new(file)))
         }
     }
-
-    if let Some(name) = current_name.take() {
-        records.push((name, current_seq));
-    }
-
-    if records.is_empty() {
-        anyhow::bail!("FASTA file contains no records: {}", path_ref.display());
-    }
-
-    Self::new(records)
-}
-
-/// Open plain or gzip-compressed FASTA as a buffered reader.
-fn open_fasta_reader<P: AsRef<Path>>(path: P) -> Result<Box<dyn BufRead>> {
-    let path_ref = path.as_ref();
-
-    let file = File::open(path_ref)
-        .with_context(|| format!("failed to open FASTA file {}", path_ref.display()))?;
-
-    let is_gz = path_ref
-        .extension()
-        .map(|ext| ext == "gz")
-        .unwrap_or(false);
-
-    if is_gz {
-        let decoder = MultiGzDecoder::new(file);
-        Ok(Box::new(BufReader::new(decoder)))
-    } else {
-        Ok(Box::new(BufReader::new(file)))
-    }
-}
     /// Create a genome directly from named sequences.
     ///
     /// Useful for tests and small synthetic references.
@@ -175,11 +169,7 @@ fn open_fasta_reader<P: AsRef<Path>>(path: P) -> Result<Box<dyn BufRead>> {
     pub fn record_name(id: &[u8]) -> Result<String> {
         let id_str = std::str::from_utf8(id).context("FASTA record id is not valid UTF-8")?;
 
-        let name = id_str
-            .split_whitespace()
-            .next()
-            .unwrap_or("")
-            .to_string();
+        let name = id_str.split_whitespace().next().unwrap_or("").to_string();
 
         if name.is_empty() {
             anyhow::bail!("empty FASTA record id");

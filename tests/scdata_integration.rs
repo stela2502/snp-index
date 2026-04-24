@@ -2,9 +2,7 @@
 use anyhow::Result;
 use scdata::cell_data::GeneUmiHash;
 use scdata::{MatrixValueType, Scdata};
-use snp_index::{
-    AlignedRead, Genome, ReadOpKind, RefineOptions, SnpIndex, Strand, VcfReadOptions,
-};
+use snp_index::{AlignedRead, Genome, ReadOpKind, RefineOptions, SnpIndex, Strand, VcfReadOptions};
 
 use std::fs;
 use std::path::PathBuf;
@@ -53,21 +51,11 @@ fn snp_matches_can_be_inserted_into_scdata_and_exported() -> Result<()> {
         let umi = 0_u64;
 
         for snp_id in snp_match.ref_ids {
-            scdata_ref.try_insert(
-                &cell_id,
-                GeneUmiHash(snp_id as u64, umi),
-                1.0,
-                &mut report,
-            );
+            scdata_ref.try_insert(&cell_id, GeneUmiHash(snp_id as u64, umi), 1.0, &mut report);
         }
 
         for snp_id in snp_match.alt_ids {
-            scdata_alt.try_insert(
-                &cell_id,
-                GeneUmiHash(snp_id as u64, umi),
-                1.0,
-                &mut report,
-            );
+            scdata_alt.try_insert(&cell_id, GeneUmiHash(snp_id as u64, umi), 1.0, &mut report);
         }
     }
 
@@ -75,8 +63,12 @@ fn snp_matches_can_be_inserted_into_scdata_and_exported() -> Result<()> {
     scdata_ref.finalize_for_export(1, &snp_index);
     scdata_alt.finalize_for_export(1, &snp_index);
 
-    scdata_ref.write_sparse(&ref_out, &snp_index).map_err(anyhow::Error::msg)?;
-    scdata_alt.write_sparse(&alt_out, &snp_index).map_err(anyhow::Error::msg)?;
+    scdata_ref
+        .write_sparse(&ref_out, &snp_index)
+        .map_err(anyhow::Error::msg)?;
+    scdata_alt
+        .write_sparse(&alt_out, &snp_index)
+        .map_err(anyhow::Error::msg)?;
 
     assert!(ref_out.exists());
     assert!(alt_out.exists());
@@ -155,38 +147,28 @@ chr1\t211\tsnp_210_G_A\tG\tA\t.\tPASS\t.
     )?;
 
     Ok(())
-
 }
 
 fn make_test_reads() -> Vec<AlignedRead> {
     vec![
         // 1: covers SNP 100 as REF A
         make_linear_read(96, 20, &[(100, b'A')]),
-
         // 2: covers SNP 100 as ALT G
         make_linear_read(96, 20, &[(100, b'G')]),
-
         // 3: covers SNP 150 as REF C
         make_linear_read(146, 20, &[(150, b'C')]),
-
         // 4: covers SNP 150 as ALT T
         make_linear_read(146, 20, &[(150, b'T')]),
-
         // 5: covers SNP 210 as REF G
         make_linear_read(206, 20, &[(210, b'G')]),
-
         // 6: covers SNP 210 as ALT A
         make_linear_read(206, 20, &[(210, b'A')]),
-
         // 7: covers SNP 100 and 150: REF at 100, ALT at 150
         make_linear_read(96, 80, &[(100, b'A'), (150, b'T')]),
-
         // 8: covers SNP 100 and 150: ALT at 100, REF at 150
         make_linear_read(96, 80, &[(100, b'G'), (150, b'C')]),
-
         // 9: spliced read, second block covers SNP 210 as REF G
         make_spliced_read_around_210(b'G'),
-
         // 10: spliced read, second block covers SNP 210 as ALT A
         make_spliced_read_around_210(b'A'),
     ]
@@ -241,7 +223,6 @@ fn make_spliced_read_around_210(base_at_210: u8) -> AlignedRead {
         ],
     )
 }
-
 
 use flate2::read::GzDecoder;
 use std::io::Read;
