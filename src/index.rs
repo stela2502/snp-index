@@ -168,11 +168,10 @@ impl SnpIndex {
                     continue;
                 };
 
-                if let Some(q) = obs.qual {
-                    if q < min_baseq {
+                if let Some(q) = obs.qual
+                    && q < min_baseq {
                         continue;
                     }
-                }
 
                 if locus.is_reference_base(obs.base) {
                     hits.ref_ids.push(locus.id as u32);
@@ -465,7 +464,7 @@ impl SnpIndex {
 
     /// Reorder loci according to an index vector.
     pub fn reorder_loci_by_indices(loci: Vec<SnpLocus>, order: &[usize]) -> Vec<SnpLocus> {
-        order.into_iter().map(|old_idx| loci[*old_idx].clone()).collect()
+        order.iter().map(|old_idx| loci[*old_idx].clone()).collect()
     }
 
     /// Build CSR-style bin starts from loci already ordered by bin.

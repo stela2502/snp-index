@@ -227,11 +227,10 @@ impl SnpVcfReader {
     ) -> String {
         let id = record.id();
 
-        if !id.is_empty() && id != b"." {
-            if let Ok(id_string) = std::str::from_utf8(&id) {
+        if !id.is_empty() && id != b"."
+            && let Ok(id_string) = std::str::from_utf8(&id) {
                 return id_string.to_string();
             }
-        }
 
         Self::fallback_name(chr_name, pos0, reference, alternates)
     }

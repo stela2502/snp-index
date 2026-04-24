@@ -282,15 +282,14 @@ impl AlignedRead {
 
     /// Validate sequence, quality, and operation consistency.
     pub fn validate(&self) -> Result<(), String> {
-        if let Some(qual) = &self.qual {
-            if qual.len() != self.seq.len() {
+        if let Some(qual) = &self.qual
+            && qual.len() != self.seq.len() {
                 return Err(format!(
                     "quality length ({}) does not match sequence length ({})",
                     qual.len(),
                     self.seq.len()
                 ));
             }
-        }
 
         let expected = self.read_len_from_ops() as usize;
         if expected != self.seq.len() {

@@ -84,7 +84,7 @@ impl SnpLocus {
     /// Return true if `base` matches any alternative allele.
     pub fn is_alternate_base(&self, base: u8) -> bool {
         let base = base.to_ascii_uppercase();
-        self.alternates.iter().any(|alt| *alt == base)
+        self.alternates.contains(&base)
     }
 
     /// Return the 1-based genomic position, useful for human-readable output.
