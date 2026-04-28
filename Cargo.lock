@@ -1012,9 +1012,9 @@ checksum = "b39cdef0fa800fc44525c84ccb54a029961a8215f9619753635a9c0d2538d46d"
 
 [[package]]
 name = "scdata"
-version = "0.2.2"
+version = "0.2.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "edb2791362d55acf6a347196f67751cb75f8d3c8db0e4f220475625ef7c69158"
+checksum = "2c7e337b7d82610d0bf7fff7c0ede56da7f878c1f90ee928ef38d8497f542945"
 dependencies = [
  "flate2",
  "mapping_info",

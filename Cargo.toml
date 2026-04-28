@@ -17,4 +17,4 @@ gtf_splice_index = "0.4.0"
 mapping_info = "0.1.0"
 rust-htslib = "1.0.0"
 #scdata = { git = "https://github.com/stela2502/scdata" }
-scdata = "0.2.2"
+scdata = "0.2.3"
