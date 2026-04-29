@@ -117,7 +117,22 @@ impl FeatureIndex for SnpIndex {
     fn to_10x_feature_line(&self, feature_id: u64) -> String {
         let locus = &self.loci[feature_id as usize];
 
-        format!("{}\t{}\tSNP", locus.vcf_id, locus.name)
+        let alt = locus
+            .alternates
+            .iter()
+            .map(|a| (*a as char).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let name = format!(
+            "{}:{}:{}/{}",
+            self.chr_names[locus.chr_id],
+            locus.pos0 + 1,
+            locus.reference as char,
+            alt
+        );
+
+        format!("{}\t{}\tSNP", locus.vcf_id, name)
     }
 
     /// Export SNPs in feature-id order.
@@ -569,8 +584,237 @@ impl SnpIndex {
     pub fn ceil_div_u32(value: u32, denominator: u32) -> u32 {
         value.div_ceil(denominator)
     }
+
 }
 
 
 
 
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use scdata::FeatureIndex;
+
+    impl SnpIndex {
+        fn test_locus(chr_id: usize, pos0: u32, name: &str, vcf_id: &str) -> SnpLocus {
+            SnpLocus::new(
+                999,
+                chr_id,
+                pos0,
+                b'C',
+                vec![b'T'],
+                name.to_string(),
+                vcf_id.to_string(),
+            )
+        }
+    }
+
+    #[test]
+    fn build_chr_bin_counts_uses_ceiling_division() {
+        let counts = SnpIndex::build_chr_bin_counts(&[100, 101, 200], 100);
+        assert_eq!(counts, vec![1, 2, 2]);
+    }
+
+    #[test]
+    fn build_chr_bin_offsets_prefix_sums_counts() {
+        let offsets = SnpIndex::build_chr_bin_offsets(&[3, 2, 5]);
+        assert_eq!(offsets, vec![0, 3, 5]);
+    }
+
+    #[test]
+    fn validate_genome_rejects_mismatch() {
+        let names = vec!["chr1".to_string()];
+        let lengths = vec![100, 200];
+
+        assert!(SnpIndex::validate_genome(&names, &lengths).is_err());
+    }
+
+    #[test]
+    fn validate_genome_rejects_empty_genome() {
+        let names: Vec<String> = Vec::new();
+        let lengths: Vec<u32> = Vec::new();
+
+        assert!(SnpIndex::validate_genome(&names, &lengths).is_err());
+    }
+
+    #[test]
+    fn validate_bin_width_rejects_zero() {
+        assert!(SnpIndex::validate_bin_width(0).is_err());
+        assert!(SnpIndex::validate_bin_width(1).is_ok());
+    }
+
+    #[test]
+    fn sort_and_reassign_loci_orders_by_genome() {
+        let loci = vec![
+            SnpIndex::test_locus(1, 10, "c", "rs_c"),
+            SnpIndex::test_locus(0, 20, "b", "rs_b"),
+            SnpIndex::test_locus(0, 10, "a", "rs_a"),
+        ];
+
+        let loci = SnpIndex::sort_and_reassign_loci(loci);
+
+        assert_eq!(loci[0].id, 0);
+        assert_eq!(loci[0].chr_id, 0);
+        assert_eq!(loci[0].pos0, 10);
+        assert_eq!(loci[0].name, "a");
+        assert_eq!(loci[0].vcf_id, "rs_a");
+
+        assert_eq!(loci[1].id, 1);
+        assert_eq!(loci[1].chr_id, 0);
+        assert_eq!(loci[1].pos0, 20);
+        assert_eq!(loci[1].name, "b");
+        assert_eq!(loci[1].vcf_id, "rs_b");
+
+        assert_eq!(loci[2].id, 2);
+        assert_eq!(loci[2].chr_id, 1);
+        assert_eq!(loci[2].pos0, 10);
+        assert_eq!(loci[2].name, "c");
+        assert_eq!(loci[2].vcf_id, "rs_c");
+    }
+
+    #[test]
+    fn build_name_to_id_rejects_duplicates() {
+        let loci = vec![
+            SnpLocus::new(
+                0,
+                0,
+                10,
+                b'A',
+                vec![b'C'],
+                "dup".to_string(),
+                "rs_dup_1".to_string(),
+            ),
+            SnpLocus::new(
+                1,
+                0,
+                20,
+                b'G',
+                vec![b'T'],
+                "dup".to_string(),
+                "rs_dup_2".to_string(),
+            ),
+        ];
+
+        assert!(SnpIndex::build_name_to_id(&loci).is_err());
+    }
+
+    #[test]
+    fn new_builds_flat_bins() {
+        let chr_names = vec!["chr1".to_string(), "chr2".to_string()];
+        let chr_lengths = vec![1_000, 1_000];
+
+        let loci = vec![
+            SnpIndex::test_locus(0, 10, "a", "rs_a"),
+            SnpIndex::test_locus(0, 250, "b", "rs_b"),
+            SnpIndex::test_locus(1, 50, "c", "rs_c"),
+        ];
+
+        let index = SnpIndex::new(chr_names, chr_lengths, loci, 100).unwrap();
+
+        assert_eq!(index.n_bins(), 20);
+        assert_eq!(index.len(), 3);
+        assert_eq!(index.chr_bin_offsets, vec![0, 10]);
+
+        let bin0 = index.loci_in_chr_bin(0, 0).unwrap();
+        assert_eq!(bin0.len(), 1);
+        assert_eq!(bin0[0].name, "a");
+        assert_eq!(bin0[0].vcf_id, "rs_a");
+
+        let bin2 = index.loci_in_chr_bin(0, 2).unwrap();
+        assert_eq!(bin2.len(), 1);
+        assert_eq!(bin2[0].name, "b");
+        assert_eq!(bin2[0].vcf_id, "rs_b");
+
+        let chr2_bin0 = index.loci_in_chr_bin(1, 0).unwrap();
+        assert_eq!(chr2_bin0.len(), 1);
+        assert_eq!(chr2_bin0[0].name, "c");
+        assert_eq!(chr2_bin0[0].vcf_id, "rs_c");
+    }
+
+    #[test]
+    fn global_bin_for_pos_uses_chromosome_offsets() {
+        let index = SnpIndex::new(
+            vec!["chr1".to_string(), "chr2".to_string()],
+            vec![1_000, 1_000],
+            Vec::new(),
+            100,
+        )
+        .unwrap();
+
+        assert_eq!(index.global_bin_for_pos(0, 0), Some(0));
+        assert_eq!(index.global_bin_for_pos(0, 999), Some(9));
+        assert_eq!(index.global_bin_for_pos(1, 0), Some(10));
+        assert_eq!(index.global_bin_for_pos(1, 250), Some(12));
+        assert_eq!(index.global_bin_for_pos(2, 0), None);
+        assert_eq!(index.global_bin_for_pos(0, 1_000), None);
+    }
+
+    #[test]
+    fn global_bins_for_span_returns_inclusive_range() {
+        let index = SnpIndex::new(
+            vec!["chr1".to_string(), "chr2".to_string()],
+            vec![1_000, 1_000],
+            Vec::new(),
+            100,
+        )
+        .unwrap();
+
+        assert_eq!(
+            index
+                .global_bins_for_span(0, 50, 250)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+
+        assert_eq!(
+            index
+                .global_bins_for_span(1, 50, 250)
+                .unwrap()
+                .collect::<Vec<_>>(),
+            vec![10, 11, 12]
+        );
+
+        assert!(index.global_bins_for_span(0, 10, 10).is_none());
+    }
+
+    #[test]
+    fn feature_index_outputs_vcf_id_and_genomic_snp_name() {
+        let chr_names = vec!["chrA".to_string()];
+        let chr_lengths = vec![1_000];
+
+        let loci = vec![
+            SnpLocus::new(
+                999,
+                0,
+                124,
+                b'A',
+                vec![b'T'],
+                "internal_geneA_name".to_string(),
+                "rs_geneA_125".to_string(),
+            ),
+            SnpLocus::new(
+                999,
+                0,
+                444,
+                b'C',
+                vec![b'G'],
+                "internal_geneB_name".to_string(),
+                "rs_geneB_445".to_string(),
+            ),
+        ];
+
+        let index = SnpIndex::new(chr_names, chr_lengths, loci, 100).unwrap();
+
+        assert_eq!(
+            index.to_10x_feature_line(0),
+            "rs_geneA_125\tchrA:125:A/T\tSNP"
+        );
+
+        assert_eq!(
+            index.to_10x_feature_line(1),
+            "rs_geneB_445\tchrA:445:C/G\tSNP"
+        );
+    }
+}
