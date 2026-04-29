@@ -187,6 +187,10 @@ impl Genome {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::AlignedRead;
+    use crate::ReadOpKind;
+    use crate::Strand;
+
 
     #[test]
     fn new_builds_genome_and_uppercases_sequences() {
@@ -256,4 +260,81 @@ mod tests {
         assert!(Genome::record_name(b"").is_err());
         assert!(Genome::record_name(b"   ").is_err());
     }
+
+    fn make_read(
+        seq: &[u8],
+        pairs: Vec<(ReadOpKind, u32)>,
+    ) -> AlignedRead {
+        AlignedRead::new(
+            0,
+            Strand::Plus,
+            0,
+            seq.to_vec(),
+            Some(vec![30; seq.len()]),
+            pairs,
+        )
+    }
+
+    #[test]
+    fn base_at_ref_pos_simple() {
+        let read = make_read(
+            b"ACGT",
+            vec![(ReadOpKind::Match, 4)],
+        );
+
+        // Assuming default pos0 = 0
+        assert_eq!(read.base_at_ref_pos(0).unwrap().base, b'A');
+        assert_eq!(read.base_at_ref_pos(1).unwrap().base, b'C');
+    }
+
+    #[test]
+    fn base_at_ref_pos_softclip() {
+        let read = make_read(
+            b"NNNNACGT",
+            vec![
+                (ReadOpKind::SoftClip, 4),
+                (ReadOpKind::Match, 4),
+            ],
+        );
+
+        // first aligned base should be 'A'
+        assert_eq!(read.base_at_ref_pos(0).unwrap().base, b'A');
+    }
+
+    #[test]
+    fn base_at_ref_pos_splice() {
+        let read = make_read(
+            b"AAAACCCC",
+            vec![
+                (ReadOpKind::Match, 4),
+                (ReadOpKind::RefSkip, 100),
+                (ReadOpKind::Match, 4),
+            ],
+        );
+
+        assert_eq!(read.base_at_ref_pos(0).unwrap().base, b'A');
+        assert_eq!(read.base_at_ref_pos(3).unwrap().base, b'A');
+
+        // skipped region → no base
+        assert!(read.base_at_ref_pos(50).is_none());
+
+        // second block starts at 104
+        assert_eq!(read.base_at_ref_pos(104).unwrap().base, b'C');
+    } 
+    
+    #[test]
+    fn base_at_ref_pos_insertion() {
+        let read = make_read(
+            b"AACGT",
+            vec![
+                (ReadOpKind::Match, 2),
+                (ReadOpKind::Ins, 1),
+                (ReadOpKind::Match, 2),
+            ],
+        );
+
+        assert_eq!(read.base_at_ref_pos(0).unwrap().base, b'A');
+        assert_eq!(read.base_at_ref_pos(1).unwrap().base, b'A');
+        assert_eq!(read.base_at_ref_pos(2).unwrap().base, b'G');
+    }      
 }

@@ -25,6 +25,17 @@ pub struct RawSnpRecord {
     pub name: String,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SnpLocus {
+    pub id: usize,
+    pub chr_id: usize,
+    pub pos0: u32,
+    pub reference: u8,
+    pub alternates: Vec<u8>,
+    pub name: String,
+    pub vcf_id: String,
+}
+
 /// Options controlling which VCF/BCF records are accepted.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct VcfReadOptions {

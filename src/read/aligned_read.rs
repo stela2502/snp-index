@@ -373,6 +373,8 @@ impl AlignedRead {
 mod tests {
     use super::*;
     use gtf_splice_index::types::RefBlock;
+    use crate::ReadOpKind;
+
 
     impl AlignedRead {
         fn simple_read() -> Self {
@@ -573,5 +575,44 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn tp53_probe_positions_in_b05_read_are_not_covered() {
+        let read = AlignedRead::new(
+            0,
+            Strand::Minus,
+            7_359_184, // SAM POS 7359185 -> 0-based
+            vec![b'A'; 768],
+            Some(vec![30; 768]),
+            vec![
+                (ReadOpKind::SoftClip, 24),
+                (ReadOpKind::Match, 35),
+                (ReadOpKind::Del, 5),
+                (ReadOpKind::Match, 16),
+                (ReadOpKind::Del, 3),
+                (ReadOpKind::Match, 27),
+                (ReadOpKind::RefSkip, 236_919),
+                (ReadOpKind::Match, 138),
+                (ReadOpKind::Del, 1),
+                (ReadOpKind::Match, 22),
+                (ReadOpKind::Ins, 1),
+                (ReadOpKind::Match, 38),
+                (ReadOpKind::RefSkip, 90_635),
+                (ReadOpKind::Match, 213),
+                (ReadOpKind::Del, 1),
+                (ReadOpKind::Match, 167),
+                (ReadOpKind::Del, 1),
+                (ReadOpKind::Match, 6),
+                (ReadOpKind::Ins, 1),
+                (ReadOpKind::Match, 77),
+                (ReadOpKind::SoftClip, 4),
+            ],
+        );
+
+        // VCF positions are 1-based; base_at_ref_pos uses 0-based.
+        assert!(read.base_at_ref_pos(7_675_994 - 1).is_none());
+        assert!(read.base_at_ref_pos(7_674_894 - 1).is_none());
+        assert!(read.base_at_ref_pos(7_674_953 - 1).is_none());
     }
 }

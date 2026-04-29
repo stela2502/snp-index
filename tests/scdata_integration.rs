@@ -50,11 +50,13 @@ fn snp_matches_can_be_inserted_into_scdata_and_exported() -> Result<()> {
         let cell_id = (i as u64) + 1;
         let umi = 0_u64;
 
-        for snp_id in snp_match.ref_ids {
+        for hit in &snp_match.reference {
+            let snp_id = hit.feature_id();
             scdata_ref.try_insert(&cell_id, GeneUmiHash(snp_id as u64, umi), 1.0, &mut report);
         }
-
-        for snp_id in snp_match.alt_ids {
+        
+        for hit in &snp_match.alternate {
+            let snp_id = hit.feature_id();
             scdata_alt.try_insert(&cell_id, GeneUmiHash(snp_id as u64, umi), 1.0, &mut report);
         }
     }

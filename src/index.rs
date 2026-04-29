@@ -1,234 +1,204 @@
-//! SNP index construction.
+//! Binned SNP index with `FeatureIndex` support.
 //!
-//! This module owns the final `SnpIndex` structure.
-//! It stores SNP loci sorted by chromosome and position, plus a flat CSR-style
-//! bin index for fast genomic lookup.
+//! Design rules:
+//! - `SnpIndex::loci` is the only canonical SNP storage.
+//! - Bins only store locus ids into `loci`.
+//! - Chromosome names are resolved through a fuzzy lookup table.
+//! - Read/SNP overlap returns `ObservedSnp`, not pre-classified monster structs.
 
 use crate::locus::SnpLocus;
+use crate::read::{AlignedRead, ObservedBase};
 use crate::vcf::{SnpVcfReader, VcfReadOptions};
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use scdata::feature_index::FeatureIndex;
 use std::collections::HashMap;
 use std::path::Path;
+use crate::RawSnpRecord;
 
-use std::fmt;
+pub const DEFAULT_BIN_WIDTH: usize=10_000;
 
-use crate::AlignedRead;
-
-/// Default genomic bin width.
+/// Binned SNP index.
 ///
-/// This is intentionally fairly coarse. SNPs are point features, so the
-/// optimal value is usually determined by read length and SNP density.
-pub const DEFAULT_BIN_WIDTH: u32 = 16_384;
-
-/// Result of matching a read against SNP loci.
-///
-/// For each overlapped SNP:
-/// - matching REF base → added to `ref_ids`
-/// - matching ALT base → added to `alt_ids`
-///
-/// Notes:
-/// - Each SNP appears in at most one list.
-/// - SNPs not covered or not matching REF/ALT are ignored.
-/// - Stores SNP *ids* (not positions).
-#[derive(Debug, Clone, PartialEq, Eq, Default)]
-pub struct SnpReadMatch {
-    pub ref_ids: Vec<u32>,
-    pub alt_ids: Vec<u32>,
-}
-
-/// A flat, chromosome-aware SNP index.
-///
-/// Bins are flattened into a single global array:
-///
-/// `global_bin = chr_bin_offsets[chr_id] + local_bin`
-///
-/// `bin_starts` uses a CSR-style layout:
-///
-/// SNPs in bin `b` are stored in:
-///
-/// `loci[bin_starts[b]..bin_starts[b + 1]]`
+/// SNPs are stored once in [`SnpIndex::loci`].
+/// Bins store only ids into that vector.
 #[derive(Debug, Clone)]
 pub struct SnpIndex {
-    pub chr_names: Vec<String>,
-    pub chr_lengths: Vec<u32>,
-    pub chr_bin_offsets: Vec<usize>,
-    pub chr_bin_counts: Vec<usize>,
+    pub chr_info: Vec<ChrInfo>,
+    pub chr_name_to_id: HashMap<String, usize>,
     pub bin_width: u32,
 
-    /// Loci sorted by `(chr_id, pos0, name)`, then reordered by bin.
+    /// Canonical SNP table.
     ///
-    /// Within each bin, loci remain sorted by `(chr_id, pos0, name)`.
+    /// Invariant:
+    /// `loci[id].id == id`
     pub loci: Vec<SnpLocus>,
 
-    /// CSR-style bin starts.
+    /// Flat bin vector.
     ///
-    /// Length is `number_of_global_bins + 1`.
-    pub bin_starts: Vec<usize>,
+    /// Global bin:
+    /// `chr_info[chr_id].bin_offset + local_bin`
+    pub bins: Vec<SnpLocusBin>,
 
-    /// Feature name to feature id lookup.
+    /// Feature name / VCF id -> feature id.
     pub name_to_id: HashMap<String, u64>,
 }
 
+/// Per-chromosome metadata.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChrInfo {
+    pub name: String,
+    pub length: u32,
+    pub bin_offset: usize,
+    pub bin_count: usize,
+}
 
-impl fmt::Display for SnpIndex {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let first = self
-            .loci
-            .first()
-            .map(|locus| {
-                format!(
-                    "{}:{} {}>{} ({})",
-                    self.chr_names[locus.chr_id],
-                    locus.pos1(),
-                    locus.reference as char,
-                    locus.alternates.iter().map(|a| *a as char).collect::<String>(),
-                    locus.vcf_id,
-                )
-            })
-            .unwrap_or_else(|| "none".to_string());
+/// One genomic bin.
+///
+/// This intentionally does not know how to search.
+/// Search belongs to [`SnpIndex`].
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SnpLocusBin {
+    /// Indices into `SnpIndex::loci`.
+    ///
+    /// Invariant:
+    /// sorted by `(loci[id].pos0, loci[id].id)`.
+    pub locus_ids: Vec<usize>,
+}
 
-        write!(
-            f,
-            "SnpIndex: {} SNPs in {} chromosomes; first SNP: {}",
-            self.loci.len(),
-            self.chr_names.len(),
-            first
-        )
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct SnpReadMatch<'a> {
+    pub reference: Vec<ObservedSnp<'a>>,
+    pub alternate: Vec<ObservedSnp<'a>>,
+    pub other: Vec<ObservedSnp<'a>>,
+}
+
+impl<'a> SnpReadMatch<'a> {
+    pub fn push(&mut self, hit: ObservedSnp<'a>) {
+        if hit.is_ref() {
+            self.reference.push(hit);
+        } else if hit.is_alt() {
+            self.alternate.push(hit);
+        } else {
+            self.other.push(hit);
+        }
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.reference.is_empty() && self.alternate.is_empty() && self.other.is_empty()
+    }
+
+    pub fn has_reference(&self) -> bool {
+        !self.reference.is_empty()
+    }
+
+    pub fn has_alternate(&self) -> bool {
+        !self.alternate.is_empty()
+    }
+
+    pub fn reference_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.reference.iter().map(|hit| hit.feature_id())
+    }
+
+    pub fn alternate_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.alternate.iter().map(|hit| hit.feature_id())
+    }
+
+    pub fn other_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.other.iter().map(|hit| hit.feature_id())
     }
 }
 
+/// SNP observed in one aligned read.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ObservedSnp<'a> {
+    pub locus: &'a SnpLocus,
+    pub observed: ObservedBase,
+}
 
-impl FeatureIndex for SnpIndex {
-    /// id to name translation
-    fn feature_name(&self, feature_id: u64) -> &str {
-        &self.loci[feature_id as usize].name
+impl<'a> ObservedSnp<'a> {
+    pub fn is_ref(&self) -> bool {
+        self.observed.base.to_ascii_uppercase() == self.locus.reference.to_ascii_uppercase()
     }
 
-    /// name to id translation
-    fn feature_id(&self, name: &str) -> Option<u64> {
-        self.name_to_id.get(name).copied()
-    }
+    pub fn is_alt(&self) -> bool {
+        let base = self.observed.base.to_ascii_uppercase();
 
-    /// One line in features.tsv.
-    ///
-    /// 10x convention is:
-    /// feature_id<TAB>feature_name<TAB>feature_type
-    fn to_10x_feature_line(&self, feature_id: u64) -> String {
-        let locus = &self.loci[feature_id as usize];
-
-        let alt = locus
+        self.locus
             .alternates
             .iter()
-            .map(|a| (*a as char).to_string())
-            .collect::<Vec<_>>()
-            .join(",");
-
-        let name = format!(
-            "{}:{}:{}/{}",
-            self.chr_names[locus.chr_id],
-            locus.pos0 + 1,
-            locus.reference as char,
-            alt
-        );
-
-        format!("{}\t{}\tSNP", locus.vcf_id, name)
+            .any(|alt| base == alt.to_ascii_uppercase())
     }
 
-    /// Export SNPs in feature-id order.
-    fn ordered_feature_ids(&self) -> Vec<u64> {
-        (0..self.loci.len() as u64).collect()
+    pub fn is_other(&self) -> bool {
+        !self.is_ref() && !self.is_alt()
+    }
+
+    pub fn feature_id(&self) -> u64 {
+        self.locus.id as u64
     }
 }
 
 impl SnpIndex {
-    /// Build an SNP index from already parsed loci.
+    /// Build a SNP index from already parsed loci.
     ///
-    /// `chr_names` and `chr_lengths` should normally come from the BAM header.
-    /// Their order defines the chromosome id space used by this index.
+    /// `chr_names` and `chr_lengths` define the chromosome id space.
+    /// Each `SnpLocus::chr_id` must refer to this space.
     pub fn new(
         chr_names: Vec<String>,
         chr_lengths: Vec<u32>,
-        loci: Vec<SnpLocus>,
+        mut raw_loci: Vec<RawSnpRecord>,
         bin_width: u32,
     ) -> Result<Self> {
-        Self::validate_genome(&chr_names, &chr_lengths)?;
+        Self::validate_genome_inputs(&chr_names, &chr_lengths)?;
         Self::validate_bin_width(bin_width)?;
 
-        let chr_bin_counts = Self::build_chr_bin_counts(&chr_lengths, bin_width);
-        let chr_bin_offsets = Self::build_chr_bin_offsets(&chr_bin_counts);
-        let total_bins = Self::total_bins(&chr_bin_counts);
+        let chr_name_to_id = Self::build_chr_map(&chr_names);
+        let chr_info = Self::build_chr_info(chr_names, chr_lengths, bin_width)?;
 
-        let mut index = Self {
-            chr_names,
-            chr_lengths,
-            chr_bin_offsets,
-            chr_bin_counts,
+        Self::validate_and_canonicalize_raw_loci(&chr_info, &mut raw_loci)?;
+
+        raw_loci.sort_by(|a, b| {
+            (a.chr_id, a.pos0, a.name.as_str(), a.vcf_id.as_str())
+                .cmp(&(b.chr_id, b.pos0, b.name.as_str(), b.vcf_id.as_str()))
+        });
+
+        let loci: Vec<SnpLocus> = raw_loci
+            .into_iter()
+            .enumerate()
+            .map(|(id, raw)| SnpLocus {
+                id,
+                chr_id: raw.chr_id,
+                pos0: raw.pos0,
+                reference: raw.reference.to_ascii_uppercase(),
+                alternates: raw
+                    .alternates
+                    .into_iter()
+                    .map(|b| b.to_ascii_uppercase())
+                    .collect(),
+                name: raw.name,
+                vcf_id: raw.vcf_id,
+            })
+            .collect();
+
+        let mut bins = Self::build_empty_bins(&chr_info);
+        Self::fill_bins(&chr_info, bin_width, &loci, &mut bins)?;
+        Self::sort_bins(&loci, &mut bins);
+
+        let name_to_id = Self::build_name_to_id(&loci);
+
+        Ok(Self {
+            chr_info,
+            chr_name_to_id,
             bin_width,
-            loci: Vec::new(),
-            bin_starts: vec![0; total_bins + 1],
-            name_to_id: HashMap::new(),
-        };
-
-        index.rebuild_from_loci(loci)?;
-
-        Ok(index)
+            loci,
+            bins,
+            name_to_id,
+        })
     }
 
-    /// Match an aligned read against indexed SNP loci.
+    /// Build the index directly from a VCF path.
     ///
-    /// For every SNP covered by the read, the observed read base is compared
-    /// against the locus reference and alternate alleles.
-    pub fn match_read(&self, read: &AlignedRead, min_baseq: u8) -> SnpReadMatch {
-        let Some((start0, end0)) = read.ref_span() else {
-            return SnpReadMatch::default();
-        };
-
-        let Some(bin_range) = self.global_bins_for_span(read.chr_id, start0, end0) else {
-            return SnpReadMatch::default();
-        };
-
-        let mut hits = SnpReadMatch::default();
-
-        for global_bin in bin_range {
-            let Some(loci) = self.loci_in_global_bin(global_bin) else {
-                continue;
-            };
-
-            for locus in loci {
-                if locus.chr_id != read.chr_id {
-                    continue;
-                }
-
-                if locus.pos0 < start0 || locus.pos0 >= end0 {
-                    continue;
-                }
-
-                let Some(obs) = read.base_at_ref_pos(locus.pos0) else {
-                    continue;
-                };
-
-                if let Some(q) = obs.qual
-                    && q < min_baseq
-                {
-                    continue;
-                }
-
-                if locus.is_reference_base(obs.base) {
-                    hits.ref_ids.push(locus.id as u32);
-                } else if locus.is_alternate_base(obs.base) {
-                    hits.alt_ids.push(locus.id as u32);
-                }
-            }
-        }
-
-        hits
-    }
-
-    /// Build an SNP index directly from a VCF/BCF file.
-    ///
-    /// The `chr_names` and `chr_lengths` should come from the BAM header.
-    /// VCF contigs are mapped into this chromosome id space by name.
+    /// Adapt the two `SnpVcfReader` calls if your reader API uses different names.
     pub fn from_vcf_path<P: AsRef<Path>>(
         path: P,
         chr_names: Vec<String>,
@@ -236,133 +206,178 @@ impl SnpIndex {
         bin_width: u32,
         options: &VcfReadOptions,
     ) -> Result<Self> {
-        let chr_map = Self::build_chr_map(&chr_names);
-        let raw = SnpVcfReader::read_path(path, &chr_map, options)?;
-        let loci = SnpLocus::from_raw_records(raw);
+        let chr_name_to_id = Self::build_chr_map(&chr_names);
 
-        Self::new(chr_names, chr_lengths, loci, bin_width)
+        let raw_loci =  SnpVcfReader::read_path(path, &chr_name_to_id, options)
+            .context("failed to read SNP loci from VCF")?;
+
+        Self::new(chr_names, chr_lengths, raw_loci, bin_width)
     }
 
-    /// Rebuild bins and name lookup from a locus vector.
-    ///
-    /// Loci are sorted and reassigned ids so feature ids are deterministic.
-    pub fn rebuild_from_loci(&mut self, loci: Vec<SnpLocus>) -> Result<()> {
-        let mut loci = Self::sort_and_reassign_loci(loci);
-        Self::validate_loci_against_genome(&loci, &self.chr_lengths)?;
-
-        let old_to_new =
-            Self::build_loci_order_by_bin(&loci, &self.chr_bin_offsets, self.bin_width)?;
-
-        loci = Self::reorder_loci_by_indices(loci, &old_to_new);
-        Self::reassign_locus_ids_in_place(&mut loci);
-
-        self.bin_starts = Self::build_bin_starts(
-            &loci,
-            self.chr_bin_offsets.len(),
-            &self.chr_bin_offsets,
-            &self.chr_bin_counts,
-            self.bin_width,
-        )?;
-
-        self.name_to_id = Self::build_name_to_id(&loci)?;
-        self.loci = loci;
-
-        Ok(())
+    /// Fuzzy chromosome name lookup.
+    pub fn chr_id(&self, chr_name: &str) -> Option<usize> {
+        self.chr_name_to_id.get(chr_name).copied()
     }
 
-    /// Return the number of SNP loci.
-    pub fn len(&self) -> usize {
-        self.loci.len()
+    pub fn chr_name(&self, chr_id: usize) -> Option<&str> {
+        self.chr_info.get(chr_id).map(|chr| chr.name.as_str())
     }
 
-    /// Return true if the index contains no SNP loci.
-    pub fn is_empty(&self) -> bool {
-        self.loci.is_empty()
-    }
-
-    /// Return the number of global bins.
-    pub fn n_bins(&self) -> usize {
-        self.bin_starts.len().saturating_sub(1)
-    }
-
-    /// Return the global bin for `chr_id` and `pos0`.
+    /// Return global bin id for one chromosome position.
     pub fn global_bin_for_pos(&self, chr_id: usize, pos0: u32) -> Option<usize> {
-        if chr_id >= self.chr_lengths.len() {
-            return None;
-        }
+        let chr = self.chr_info.get(chr_id)?;
 
-        if pos0 >= self.chr_lengths[chr_id] {
+        if pos0 >= chr.length {
             return None;
         }
 
         let local_bin = (pos0 / self.bin_width) as usize;
 
-        if local_bin >= self.chr_bin_counts[chr_id] {
+        if local_bin >= chr.bin_count {
             return None;
         }
 
-        Some(self.chr_bin_offsets[chr_id] + local_bin)
+        Some(chr.bin_offset + local_bin)
     }
 
-    /// Return the loci slice belonging to a global bin.
-    pub fn loci_in_global_bin(&self, global_bin: usize) -> Option<&[SnpLocus]> {
-        if global_bin + 1 >= self.bin_starts.len() {
-            return None;
-        }
-
-        let start = self.bin_starts[global_bin];
-        let end = self.bin_starts[global_bin + 1];
-
-        Some(&self.loci[start..end])
+    pub fn global_bin_for_chr_name_pos(&self, chr_name: &str, pos0: u32) -> Option<usize> {
+        let chr_id = self.chr_id(chr_name)?;
+        self.global_bin_for_pos(chr_id, pos0)
     }
 
-    /// Return the loci slice for a chromosome-local bin.
-    pub fn loci_in_chr_bin(&self, chr_id: usize, local_bin: usize) -> Option<&[SnpLocus]> {
-        if chr_id >= self.chr_bin_offsets.len() {
-            return None;
-        }
-
-        if local_bin >= self.chr_bin_counts[chr_id] {
-            return None;
-        }
-
-        self.loci_in_global_bin(self.chr_bin_offsets[chr_id] + local_bin)
+    pub fn locus_ids_in_global_bin(&self, global_bin: usize) -> Option<&[usize]> {
+        self.bins
+            .get(global_bin)
+            .map(|bin| bin.locus_ids.as_slice())
     }
 
-    /// Return all global bins overlapped by a genomic half-open interval.
-    ///
-    /// The interval is `[start0, end0)`.
-    pub fn global_bins_for_span(
+    /// SNPs in one exact position.
+    pub fn snps_at_pos(&self, chr_id: usize, pos0: u32) -> SnpPosIter<'_> {
+        let Some(global_bin) = self.global_bin_for_pos(chr_id, pos0) else {
+            return SnpPosIter::empty(self);
+        };
+
+        let Some(bin) = self.bins.get(global_bin) else {
+            return SnpPosIter::empty(self);
+        };
+
+        let ids = bin.locus_ids.as_slice();
+
+        let start = ids.partition_point(|&id| self.loci[id].pos0 < pos0);
+        let end = ids.partition_point(|&id| self.loci[id].pos0 <= pos0);
+
+        SnpPosIter {
+            index: self,
+            ids: &ids[start..end],
+            offset: 0,
+        }
+    }
+
+    pub fn snps_at_chr_name_pos(
+        &self,
+        chr_name: &str,
+        pos0: u32,
+    ) -> SnpPosIter<'_> {
+        let Some(chr_id) = self.chr_id(chr_name) else {
+            return SnpPosIter::empty(self);
+        };
+
+        self.snps_at_pos(chr_id, pos0)
+    }
+
+    /// SNPs in closed-open interval `[start0, end0)`.
+    pub fn snps_in_range(
         &self,
         chr_id: usize,
         start0: u32,
         end0: u32,
-    ) -> Option<std::ops::RangeInclusive<usize>> {
-        if chr_id >= self.chr_lengths.len() {
-            return None;
+    ) -> impl Iterator<Item = &SnpLocus> {
+        if end0 <= start0 {
+            return SnpRangeIter::empty(self);
         }
 
-        if start0 >= end0 {
-            return None;
+        let Some(chr) = self.chr_info.get(chr_id) else {
+            return SnpRangeIter::empty(self);
+        };
+
+        if start0 >= chr.length {
+            return SnpRangeIter::empty(self);
         }
 
-        let chr_len = self.chr_lengths[chr_id];
-        if start0 >= chr_len {
-            return None;
+        let end0 = end0.min(chr.length);
+
+        let first_bin = (start0 / self.bin_width) as usize;
+        let last_bin = ((end0 - 1) / self.bin_width) as usize;
+
+        SnpRangeIter {
+            index: self,
+            start0,
+            end0,
+            current_global_bin: chr.bin_offset + first_bin,
+            last_global_bin: chr.bin_offset + last_bin,
+            current_ids: &[],
+            current_offset: 0,
         }
-
-        let clipped_end0 = end0.min(chr_len);
-        let start_bin = (start0 / self.bin_width) as usize;
-        let end_bin = ((clipped_end0 - 1) / self.bin_width) as usize;
-
-        let offset = self.chr_bin_offsets[chr_id];
-
-        Some((offset + start_bin)..=(offset + end_bin))
     }
 
-    /// Build a chromosome name to chromosome id lookup.
+    fn locus(
+        chr_id: usize,
+        pos0: u32,
+        reference: u8,
+        alternates: &[u8],
+        name: &str,
+        vcf_id: &str,
+    ) -> RawSnpRecord {
+        RawSnpRecord {
+            chr_id,
+            pos0,
+            reference,
+            alternates: alternates.to_vec(),
+            name: name.to_string(),
+            vcf_id: vcf_id.to_string(),
+        }
+    }
+
+    /// Return SNP loci actually observed by a read.
+    ///
+    /// This does not classify ref/alt/other globally.
+    /// Each returned [`ObservedSnp`] can classify itself.
+    pub fn observed_snps<'a>(
+        &'a self,
+        read: &'a AlignedRead,
+        min_baseq: u8,
+    ) -> Vec<ObservedSnp<'a>> {
+        let mut out = Vec::new();
+
+        let Some((start0, end0)) = read.ref_span() else {
+            return out;
+        };
+
+        for locus in self.snps_in_range(read.chr_id, start0, end0) {
+            let Some(observed) = read.base_at_ref_pos(locus.pos0) else {
+                continue;
+            };
+
+            if let Some(q) = observed.qual {
+                if q < min_baseq {
+                    continue;
+                }
+            }
+
+            out.push(ObservedSnp { locus, observed });
+        }
+
+        out
+    }
+
+    /// Build a fuzzy chromosome name map.
+    ///
+    /// Examples:
+    /// - `chr1` maps also from `1`
+    /// - `1` maps also from `chr1`
+    /// - `MT`, `M`, `chrM` are treated as aliases
     pub fn build_chr_map(chr_names: &[String]) -> HashMap<String, usize> {
-        let mut map = HashMap::with_capacity(chr_names.len() * 3);
+        let mut map = HashMap::with_capacity(chr_names.len() * 4);
 
         for (chr_id, name) in chr_names.iter().enumerate() {
             map.entry(name.clone()).or_insert(chr_id);
@@ -393,428 +408,571 @@ impl SnpIndex {
         map
     }
 
-    /// Check that chromosome names and lengths describe the same genome.
-    pub fn validate_genome(chr_names: &[String], chr_lengths: &[u32]) -> Result<()> {
+    fn validate_genome_inputs(chr_names: &[String], chr_lengths: &[u32]) -> Result<()> {
         if chr_names.len() != chr_lengths.len() {
             return Err(anyhow!(
-                "chromosome name count ({}) does not match chromosome length count ({})",
+                "chr_names length ({}) != chr_lengths length ({})",
                 chr_names.len(),
                 chr_lengths.len()
             ));
         }
 
         if chr_names.is_empty() {
-            return Err(anyhow!("genome must contain at least one chromosome"));
+            return Err(anyhow!("cannot build SnpIndex without chromosomes"));
         }
 
-        for (idx, name) in chr_names.iter().enumerate() {
+        for (i, name) in chr_names.iter().enumerate() {
             if name.is_empty() {
-                return Err(anyhow!("chromosome name at index {idx} is empty"));
+                return Err(anyhow!("chromosome name at index {i} is empty"));
             }
         }
 
-        for (idx, length) in chr_lengths.iter().enumerate() {
+        for (name, length) in chr_names.iter().zip(chr_lengths.iter()) {
             if *length == 0 {
-                return Err(anyhow!("chromosome length at index {idx} is zero"));
+                return Err(anyhow!("chromosome '{name}' has length 0"));
             }
         }
 
         Ok(())
     }
 
-    /// Check that bin width is valid.
-    pub fn validate_bin_width(bin_width: u32) -> Result<()> {
+    fn validate_bin_width(bin_width: u32) -> Result<()> {
         if bin_width == 0 {
-            Err(anyhow!("bin_width must be greater than zero"))
-        } else {
-            Ok(())
-        }
-    }
-
-    /// Compute the number of bins for each chromosome.
-    pub fn build_chr_bin_counts(chr_lengths: &[u32], bin_width: u32) -> Vec<usize> {
-        chr_lengths
-            .iter()
-            .map(|len| Self::ceil_div_u32(*len, bin_width) as usize)
-            .collect()
-    }
-
-    /// Compute chromosome-level global bin offsets from per-chromosome bin counts.
-    pub fn build_chr_bin_offsets(chr_bin_counts: &[usize]) -> Vec<usize> {
-        let mut offsets = Vec::with_capacity(chr_bin_counts.len());
-        let mut running = 0usize;
-
-        for count in chr_bin_counts {
-            offsets.push(running);
-            running += *count;
-        }
-
-        offsets
-    }
-
-    /// Return the total number of bins.
-    pub fn total_bins(chr_bin_counts: &[usize]) -> usize {
-        chr_bin_counts.iter().sum()
-    }
-
-    /// Sort loci by genomic order and reassign ids.
-    pub fn sort_and_reassign_loci(mut loci: Vec<SnpLocus>) -> Vec<SnpLocus> {
-        loci.sort_by(|a, b| {
-            a.chr_id
-                .cmp(&b.chr_id)
-                .then_with(|| a.pos0.cmp(&b.pos0))
-                .then_with(|| a.name.cmp(&b.name))
-        });
-
-        Self::reassign_locus_ids_in_place(&mut loci);
-
-        loci
-    }
-
-    /// Reassign locus ids to match their current vector positions.
-    pub fn reassign_locus_ids_in_place(loci: &mut [SnpLocus]) {
-        for (id, locus) in loci.iter_mut().enumerate() {
-            locus.id = id;
-        }
-    }
-
-    /// Validate loci against chromosome ids and chromosome lengths.
-    pub fn validate_loci_against_genome(loci: &[SnpLocus], chr_lengths: &[u32]) -> Result<()> {
-        for locus in loci {
-            if locus.chr_id >= chr_lengths.len() {
-                return Err(anyhow!(
-                    "locus {} has chr_id {}, but genome has only {} chromosomes",
-                    locus.name,
-                    locus.chr_id,
-                    chr_lengths.len()
-                ));
-            }
-
-            if locus.pos0 >= chr_lengths[locus.chr_id] {
-                return Err(anyhow!(
-                    "locus {} at chr_id {} pos0 {} is outside chromosome length {}",
-                    locus.name,
-                    locus.chr_id,
-                    locus.pos0,
-                    chr_lengths[locus.chr_id]
-                ));
-            }
+            return Err(anyhow!("bin_width must be > 0"));
         }
 
         Ok(())
     }
 
-    /// Build locus vector order by global bin.
-    ///
-    /// Returns old locus indices ordered by the bin they belong to.
-    pub fn build_loci_order_by_bin(
-        loci: &[SnpLocus],
-        chr_bin_offsets: &[usize],
+    fn build_chr_info(
+        chr_names: Vec<String>,
+        chr_lengths: Vec<u32>,
         bin_width: u32,
-    ) -> Result<Vec<usize>> {
-        let mut order: Vec<usize> = (0..loci.len()).collect();
+    ) -> Result<Vec<ChrInfo>> {
+        let mut out = Vec::with_capacity(chr_names.len());
+        let mut bin_offset = 0usize;
 
-        order.sort_by_key(|old_idx| {
-            let locus = &loci[*old_idx];
-            chr_bin_offsets[locus.chr_id] + (locus.pos0 / bin_width) as usize
-        });
+        for (name, length) in chr_names.into_iter().zip(chr_lengths.into_iter()) {
+            let bin_count = length.div_ceil(bin_width) as usize;
 
-        Ok(order)
-    }
+            out.push(ChrInfo {
+                name,
+                length,
+                bin_offset,
+                bin_count,
+            });
 
-    /// Reorder loci according to an index vector.
-    pub fn reorder_loci_by_indices(loci: Vec<SnpLocus>, order: &[usize]) -> Vec<SnpLocus> {
-        order.iter().map(|old_idx| loci[*old_idx].clone()).collect()
-    }
-
-    /// Build CSR-style bin starts from loci already ordered by bin.
-    pub fn build_bin_starts(
-        loci: &[SnpLocus],
-        n_chr: usize,
-        chr_bin_offsets: &[usize],
-        chr_bin_counts: &[usize],
-        bin_width: u32,
-    ) -> Result<Vec<usize>> {
-        if chr_bin_offsets.len() != n_chr || chr_bin_counts.len() != n_chr {
-            return Err(anyhow!("chromosome bin metadata length mismatch"));
+            bin_offset = bin_offset
+                .checked_add(bin_count)
+                .ok_or_else(|| anyhow!("too many SNP bins; usize overflow"))?;
         }
 
-        let total_bins = Self::total_bins(chr_bin_counts);
-        let mut bin_counts = vec![0usize; total_bins];
+        Ok(out)
+    }
 
-        for locus in loci {
-            let global_bin = chr_bin_offsets[locus.chr_id] + (locus.pos0 / bin_width) as usize;
+    fn build_empty_bins(chr_info: &[ChrInfo]) -> Vec<SnpLocusBin> {
+        let total_bins = chr_info
+            .last()
+            .map(|chr| chr.bin_offset + chr.bin_count)
+            .unwrap_or(0);
 
-            if global_bin >= total_bins {
+        vec![SnpLocusBin::default(); total_bins]
+    }
+
+    pub fn match_read<'a>(
+        &'a self,
+        read: &'a AlignedRead,
+        min_baseq: u8,
+    ) -> SnpReadMatch<'a> {
+        let mut out = SnpReadMatch::default();
+
+        for hit in self.observed_snps(read, min_baseq) {
+            out.push(hit);
+        }
+
+        out
+    }
+
+    fn validate_and_canonicalize_raw_loci(
+        chr_info: &[ChrInfo],
+        loci: &mut [RawSnpRecord],
+    ) -> Result<()> {
+        loci.sort_by(|a, b| {
+            (a.chr_id, a.pos0, a.name.as_str(), a.vcf_id.as_str())
+                .cmp(&(b.chr_id, b.pos0, b.name.as_str(), b.vcf_id.as_str()))
+        });
+
+        for locus in loci.iter_mut() {
+            let Some(chr) = chr_info.get(locus.chr_id) else {
                 return Err(anyhow!(
-                    "locus {} maps to invalid global bin {}",
+                    "SNP '{}' has invalid chr_id {}",
                     locus.name,
-                    global_bin
+                    locus.chr_id
+                ));
+            };
+
+            if locus.pos0 >= chr.length {
+                return Err(anyhow!(
+                    "SNP '{}' position {} is outside chromosome '{}' length {}",
+                    locus.name,
+                    locus.pos0,
+                    chr.name,
+                    chr.length
                 ));
             }
 
-            bin_counts[global_bin] += 1;
+            if locus.alternates.is_empty() {
+                return Err(anyhow!("SNP '{}' has no alternate alleles", locus.name));
+            }
+
+            locus.reference = locus.reference.to_ascii_uppercase();
+
+            for alt in &mut locus.alternates {
+                *alt = alt.to_ascii_uppercase();
+            }
+
+            if locus.name.is_empty() {
+                locus.name = Self::make_default_locus_name(chr, locus);
+            }
+
         }
 
-        let mut bin_starts = vec![0usize; total_bins + 1];
-
-        for i in 0..total_bins {
-            bin_starts[i + 1] = bin_starts[i] + bin_counts[i];
-        }
-
-        Ok(bin_starts)
+        Ok(())
     }
 
-    /// Build a feature-name lookup table.
-    pub fn build_name_to_id(loci: &[SnpLocus]) -> Result<HashMap<String, u64>> {
-        let mut map = HashMap::with_capacity(loci.len());
+    fn make_default_locus_name(chr: &ChrInfo, locus: &RawSnpRecord) -> String {
+        let pos1 = locus.pos0 + 1;
+        let reference = locus.reference as char;
+
+        let alt = locus
+            .alternates
+            .iter()
+            .map(|base| (*base as char).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        format!("{}:{}:{}/{}", chr.name, pos1, reference, alt)
+    }
+
+    fn fill_bins(
+        chr_info: &[ChrInfo],
+        bin_width: u32,
+        loci: &[SnpLocus],
+        bins: &mut [SnpLocusBin],
+    ) -> Result<()> {
+        for locus in loci {
+            let chr = &chr_info[locus.chr_id];
+            let local_bin = (locus.pos0 / bin_width) as usize;
+            let global_bin = chr.bin_offset + local_bin;
+
+            let Some(bin) = bins.get_mut(global_bin) else {
+                return Err(anyhow!(
+                    "internal error: global bin {} does not exist for SNP '{}'",
+                    global_bin,
+                    locus.name
+                ));
+            };
+
+            bin.locus_ids.push(locus.id);
+        }
+
+        Ok(())
+    }
+
+    fn sort_bins(loci: &[SnpLocus], bins: &mut [SnpLocusBin]) {
+        for bin in bins {
+            bin.locus_ids
+                .sort_by_key(|&id| (loci[id].pos0, loci[id].id));
+        }
+    }
+
+    fn build_name_to_id(loci: &[SnpLocus]) -> HashMap<String, u64> {
+        let mut out = HashMap::with_capacity(loci.len() * 2);
 
         for locus in loci {
-            let previous = map.insert(locus.name.clone(), locus.id as u64);
+            let id = locus.id as u64;
 
-            if previous.is_some() {
-                return Err(anyhow!("duplicate SNP feature name: {}", locus.name));
+            out.entry(locus.name.clone()).or_insert(id);
+
+            if !locus.vcf_id.is_empty() && locus.vcf_id != "." {
+                out.entry(locus.vcf_id.clone()).or_insert(id);
             }
         }
 
-        Ok(map)
+        out
     }
-
-    /// Integer ceiling division for positive denominator.
-    pub fn ceil_div_u32(value: u32, denominator: u32) -> u32 {
-        value.div_ceil(denominator)
-    }
-
 }
 
+impl FeatureIndex for SnpIndex {
+    fn feature_name(&self, feature_id: u64) -> &str {
+        &self.loci[feature_id as usize].name
+    }
 
+    fn feature_id(&self, name: &str) -> Option<u64> {
+        self.name_to_id.get(name).copied()
+    }
 
+    fn to_10x_feature_line(&self, feature_id: u64) -> String {
+        let locus = &self.loci[feature_id as usize];
+        let chr = &self.chr_info[locus.chr_id];
 
+        let pos1 = locus.pos0 + 1;
+        let reference = locus.reference as char;
+
+        let alt = locus
+            .alternates
+            .iter()
+            .map(|base| (*base as char).to_string())
+            .collect::<Vec<_>>()
+            .join(",");
+
+        let feature_name = format!("{}:{}:{}/{}", chr.name, pos1, reference, alt);
+
+        format!("{}\t{}\tSNP", locus.name, feature_name)
+    }
+
+    fn ordered_feature_ids(&self) -> Vec<u64> {
+        self.loci.iter().map(|locus| locus.id as u64).collect()
+    }
+}
+
+pub struct SnpPosIter<'a> {
+    index: &'a SnpIndex,
+    ids: &'a [usize],
+    offset: usize,
+}
+
+impl<'a> SnpPosIter<'a> {
+    fn empty(index: &'a SnpIndex) -> Self {
+        Self {
+            index,
+            ids: &[],
+            offset: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for SnpPosIter<'a> {
+    type Item = &'a SnpLocus;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        let id = *self.ids.get(self.offset)?;
+        self.offset += 1;
+        Some(&self.index.loci[id])
+    }
+}
+
+pub struct SnpRangeIter<'a> {
+    index: &'a SnpIndex,
+    start0: u32,
+    end0: u32,
+    current_global_bin: usize,
+    last_global_bin: usize,
+    current_ids: &'a [usize],
+    current_offset: usize,
+}
+
+impl<'a> SnpRangeIter<'a> {
+    fn empty(index: &'a SnpIndex) -> Self {
+        Self {
+            index,
+            start0: 0,
+            end0: 0,
+            current_global_bin: 1,
+            last_global_bin: 0,
+            current_ids: &[],
+            current_offset: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for SnpRangeIter<'a> {
+    type Item = &'a SnpLocus;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            while let Some(&id) = self.current_ids.get(self.current_offset) {
+                self.current_offset += 1;
+
+                let locus = &self.index.loci[id];
+
+                if locus.pos0 >= self.start0 && locus.pos0 < self.end0 {
+                    return Some(locus);
+                }
+            }
+
+            if self.current_global_bin > self.last_global_bin {
+                return None;
+            }
+
+            let bin = &self.index.bins[self.current_global_bin];
+            self.current_ids = bin.locus_ids.as_slice();
+            self.current_offset = 0;
+            self.current_global_bin += 1;
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use scdata::FeatureIndex;
+    use crate::read::{AlignedRead, ReadOpKind, Strand};
 
-    impl SnpIndex {
-        fn test_locus(chr_id: usize, pos0: u32, name: &str, vcf_id: &str) -> SnpLocus {
-            SnpLocus::new(
-                999,
-                chr_id,
-                pos0,
-                b'C',
-                vec![b'T'],
-                name.to_string(),
-                vcf_id.to_string(),
-            )
+    fn locus(
+        chr_id: usize,
+        pos0: u32,
+        reference: u8,
+        alternates: &[u8],
+        name: &str,
+        vcf_id: &str,
+    ) -> RawSnpRecord {
+        RawSnpRecord {
+            chr_id,
+            pos0,
+            reference,
+            alternates: alternates.to_vec(),
+            name: name.to_string(),
+            vcf_id: vcf_id.to_string(),
         }
     }
 
-    #[test]
-    fn build_chr_bin_counts_uses_ceiling_division() {
-        let counts = SnpIndex::build_chr_bin_counts(&[100, 101, 200], 100);
-        assert_eq!(counts, vec![1, 2, 2]);
-    }
-
-    #[test]
-    fn build_chr_bin_offsets_prefix_sums_counts() {
-        let offsets = SnpIndex::build_chr_bin_offsets(&[3, 2, 5]);
-        assert_eq!(offsets, vec![0, 3, 5]);
-    }
-
-    #[test]
-    fn validate_genome_rejects_mismatch() {
-        let names = vec!["chr1".to_string()];
-        let lengths = vec![100, 200];
-
-        assert!(SnpIndex::validate_genome(&names, &lengths).is_err());
-    }
-
-    #[test]
-    fn validate_genome_rejects_empty_genome() {
-        let names: Vec<String> = Vec::new();
-        let lengths: Vec<u32> = Vec::new();
-
-        assert!(SnpIndex::validate_genome(&names, &lengths).is_err());
-    }
-
-    #[test]
-    fn validate_bin_width_rejects_zero() {
-        assert!(SnpIndex::validate_bin_width(0).is_err());
-        assert!(SnpIndex::validate_bin_width(1).is_ok());
-    }
-
-    #[test]
-    fn sort_and_reassign_loci_orders_by_genome() {
-        let loci = vec![
-            SnpIndex::test_locus(1, 10, "c", "rs_c"),
-            SnpIndex::test_locus(0, 20, "b", "rs_b"),
-            SnpIndex::test_locus(0, 10, "a", "rs_a"),
-        ];
-
-        let loci = SnpIndex::sort_and_reassign_loci(loci);
-
-        assert_eq!(loci[0].id, 0);
-        assert_eq!(loci[0].chr_id, 0);
-        assert_eq!(loci[0].pos0, 10);
-        assert_eq!(loci[0].name, "a");
-        assert_eq!(loci[0].vcf_id, "rs_a");
-
-        assert_eq!(loci[1].id, 1);
-        assert_eq!(loci[1].chr_id, 0);
-        assert_eq!(loci[1].pos0, 20);
-        assert_eq!(loci[1].name, "b");
-        assert_eq!(loci[1].vcf_id, "rs_b");
-
-        assert_eq!(loci[2].id, 2);
-        assert_eq!(loci[2].chr_id, 1);
-        assert_eq!(loci[2].pos0, 10);
-        assert_eq!(loci[2].name, "c");
-        assert_eq!(loci[2].vcf_id, "rs_c");
-    }
-
-    #[test]
-    fn build_name_to_id_rejects_duplicates() {
-        let loci = vec![
-            SnpLocus::new(
-                0,
-                0,
-                10,
-                b'A',
-                vec![b'C'],
-                "dup".to_string(),
-                "rs_dup_1".to_string(),
-            ),
-            SnpLocus::new(
-                1,
-                0,
-                20,
-                b'G',
-                vec![b'T'],
-                "dup".to_string(),
-                "rs_dup_2".to_string(),
-            ),
-        ];
-
-        assert!(SnpIndex::build_name_to_id(&loci).is_err());
-    }
-
-    #[test]
-    fn new_builds_flat_bins() {
-        let chr_names = vec!["chr1".to_string(), "chr2".to_string()];
-        let chr_lengths = vec![1_000, 1_000];
-
-        let loci = vec![
-            SnpIndex::test_locus(0, 10, "a", "rs_a"),
-            SnpIndex::test_locus(0, 250, "b", "rs_b"),
-            SnpIndex::test_locus(1, 50, "c", "rs_c"),
-        ];
-
-        let index = SnpIndex::new(chr_names, chr_lengths, loci, 100).unwrap();
-
-        assert_eq!(index.n_bins(), 20);
-        assert_eq!(index.len(), 3);
-        assert_eq!(index.chr_bin_offsets, vec![0, 10]);
-
-        let bin0 = index.loci_in_chr_bin(0, 0).unwrap();
-        assert_eq!(bin0.len(), 1);
-        assert_eq!(bin0[0].name, "a");
-        assert_eq!(bin0[0].vcf_id, "rs_a");
-
-        let bin2 = index.loci_in_chr_bin(0, 2).unwrap();
-        assert_eq!(bin2.len(), 1);
-        assert_eq!(bin2[0].name, "b");
-        assert_eq!(bin2[0].vcf_id, "rs_b");
-
-        let chr2_bin0 = index.loci_in_chr_bin(1, 0).unwrap();
-        assert_eq!(chr2_bin0.len(), 1);
-        assert_eq!(chr2_bin0[0].name, "c");
-        assert_eq!(chr2_bin0[0].vcf_id, "rs_c");
-    }
-
-    #[test]
-    fn global_bin_for_pos_uses_chromosome_offsets() {
-        let index = SnpIndex::new(
-            vec!["chr1".to_string(), "chr2".to_string()],
-            vec![1_000, 1_000],
-            Vec::new(),
+    fn test_index() -> SnpIndex {
+        SnpIndex::new(
+            vec!["chrA".to_string(), "chrB".to_string(), "MT".to_string()],
+            vec![1_000, 500, 100],
+            vec![
+                locus(0, 125, b'a', b"T", "rs_geneA_125", "rsA"),
+                locus(0, 445, b'C', b"G", "rs_geneB_445", "rsB"),
+                locus(0, 545, b'G', b"T", "rs_geneC_545", "rsC"),
+                locus(0, 835, b'C', b"A", "rs_geneD_835", "rsD"),
+                locus(1, 25, b'T', b"C", "rs_chrB_25", "rsE"),
+                locus(2, 5, b'A', b"G", "rs_mt_5", "rsMT"),
+            ],
             100,
         )
-        .unwrap();
+        .unwrap()
+    }
+
+    #[test]
+    fn builds_chr_info_and_bins() {
+        let index = test_index();
+
+        assert_eq!(index.chr_info[0].name, "chrA");
+        assert_eq!(index.chr_info[0].bin_offset, 0);
+        assert_eq!(index.chr_info[0].bin_count, 10);
+
+        assert_eq!(index.chr_info[1].name, "chrB");
+        assert_eq!(index.chr_info[1].bin_offset, 10);
+        assert_eq!(index.chr_info[1].bin_count, 5);
+
+        assert_eq!(index.chr_info[2].name, "MT");
+        assert_eq!(index.chr_info[2].bin_offset, 15);
+        assert_eq!(index.chr_info[2].bin_count, 1);
+
+        assert_eq!(index.bins.len(), 16);
+    }
+
+    #[test]
+    fn fuzzy_chr_lookup_works() {
+        let index = test_index();
+
+        assert_eq!(index.chr_id("chrA"), Some(0));
+        assert_eq!(index.chr_id("A"), Some(0));
+
+        assert_eq!(index.chr_id("chrB"), Some(1));
+        assert_eq!(index.chr_id("B"), Some(1));
+
+        assert_eq!(index.chr_id("MT"), Some(2));
+        assert_eq!(index.chr_id("chrM"), Some(2));
+        assert_eq!(index.chr_id("M"), Some(2));
+
+        assert_eq!(index.chr_id("does_not_exist"), None);
+    }
+
+    #[test]
+    fn global_bin_for_pos_works() {
+        let index = test_index();
 
         assert_eq!(index.global_bin_for_pos(0, 0), Some(0));
+        assert_eq!(index.global_bin_for_pos(0, 99), Some(0));
+        assert_eq!(index.global_bin_for_pos(0, 100), Some(1));
         assert_eq!(index.global_bin_for_pos(0, 999), Some(9));
-        assert_eq!(index.global_bin_for_pos(1, 0), Some(10));
-        assert_eq!(index.global_bin_for_pos(1, 250), Some(12));
-        assert_eq!(index.global_bin_for_pos(2, 0), None);
         assert_eq!(index.global_bin_for_pos(0, 1_000), None);
+
+        assert_eq!(index.global_bin_for_pos(1, 25), Some(10));
+        assert_eq!(index.global_bin_for_pos(2, 5), Some(15));
     }
 
     #[test]
-    fn global_bins_for_span_returns_inclusive_range() {
+    fn loci_are_canonicalized_and_sorted() {
+        let index = test_index();
+
+        for (expected_id, locus) in index.loci.iter().enumerate() {
+            assert_eq!(locus.id, expected_id);
+        }
+
+        let names: Vec<_> = index.loci.iter().map(|l| l.name.as_str()).collect();
+
+        assert_eq!(
+            names,
+            vec![
+                "rs_geneA_125",
+                "rs_geneB_445",
+                "rs_geneC_545",
+                "rs_geneD_835",
+                "rs_chrB_25",
+                "rs_mt_5",
+            ]
+        );
+
+        assert_eq!(index.loci[0].reference, b'A');
+        assert_eq!(index.loci[0].alternates, vec![b'T']);
+    }
+
+    #[test]
+    fn snps_at_pos_finds_exact_hits() {
+        let index = test_index();
+
+        let hits: Vec<_> = index.snps_at_pos(0, 125).map(|s| s.name.as_str()).collect();
+        assert_eq!(hits, vec!["rs_geneA_125"]);
+
+        let hits: Vec<_> = index.snps_at_pos(0, 126).collect();
+        assert!(hits.is_empty());
+
+        let hits: Vec<_> = index
+            .snps_at_chr_name_pos("A", 445)
+            .map(|s| s.name.as_str())
+            .collect();
+
+        assert_eq!(hits, vec!["rs_geneB_445"]);
+    }
+
+    #[test]
+    fn snps_at_pos_allows_multiple_snps_at_same_position() {
         let index = SnpIndex::new(
-            vec!["chr1".to_string(), "chr2".to_string()],
-            vec![1_000, 1_000],
-            Vec::new(),
+            vec!["chrA".to_string()],
+            vec![1_000],
+            vec![
+                locus(0, 125, b'A', b"T", "snp1", "vcf1"),
+                locus(0, 125, b'A', b"G", "snp2", "vcf2"),
+            ],
             100,
         )
         .unwrap();
 
-        assert_eq!(
-            index
-                .global_bins_for_span(0, 50, 250)
-                .unwrap()
-                .collect::<Vec<_>>(),
-            vec![0, 1, 2]
-        );
+        let hits: Vec<_> = index.snps_at_pos(0, 125).map(|s| s.name.as_str()).collect();
 
-        assert_eq!(
-            index
-                .global_bins_for_span(1, 50, 250)
-                .unwrap()
-                .collect::<Vec<_>>(),
-            vec![10, 11, 12]
-        );
-
-        assert!(index.global_bins_for_span(0, 10, 10).is_none());
+        assert_eq!(hits, vec!["snp1", "snp2"]);
     }
 
     #[test]
-    fn feature_index_outputs_vcf_id_and_genomic_snp_name() {
-        let chr_names = vec!["chrA".to_string()];
-        let chr_lengths = vec![1_000];
+    fn snps_in_range_crosses_bins() {
+        let index = test_index();
 
-        let loci = vec![
-            SnpLocus::new(
-                999,
-                0,
-                124,
-                b'A',
-                vec![b'T'],
-                "internal_geneA_name".to_string(),
-                "rs_geneA_125".to_string(),
-            ),
-            SnpLocus::new(
-                999,
-                0,
-                444,
-                b'C',
-                vec![b'G'],
-                "internal_geneB_name".to_string(),
-                "rs_geneB_445".to_string(),
-            ),
-        ];
+        let hits: Vec<_> = index
+            .snps_in_range(0, 100, 600)
+            .map(|s| s.name.as_str())
+            .collect();
 
-        let index = SnpIndex::new(chr_names, chr_lengths, loci, 100).unwrap();
+        assert_eq!(hits, vec!["rs_geneA_125", "rs_geneB_445", "rs_geneC_545"]);
+    }
+
+    #[test]
+    fn feature_index_works() {
+        let index = test_index();
+
+        assert_eq!(index.feature_id("rs_geneA_125"), Some(0));
+        assert_eq!(index.feature_id("rsA"), Some(0));
+        assert_eq!(index.feature_name(0), "rs_geneA_125");
 
         assert_eq!(
             index.to_10x_feature_line(0),
-            "rs_geneA_125\tchrA:125:A/T\tSNP"
+            "rs_geneA_125\tchrA:126:A/T\tSNP"
         );
 
-        assert_eq!(
-            index.to_10x_feature_line(1),
-            "rs_geneB_445\tchrA:445:C/G\tSNP"
+        assert_eq!(index.ordered_feature_ids(), vec![0, 1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn observed_snps_reports_ref_alt_and_other_cleanly() {
+        let index = SnpIndex::new(
+            vec!["chrA".to_string()],
+            vec![1_000],
+            vec![
+                locus(0, 100, b'A', b"T", "ref_hit", "rs1"),
+                locus(0, 101, b'C', b"T", "alt_hit", "rs2"),
+                locus(0, 102, b'G', b"A", "other_hit", "rs3"),
+            ],
+            100,
+        )
+        .unwrap();
+
+        let read = AlignedRead::new(
+            0,
+            Strand::Plus,
+            100,
+            b"ATC".to_vec(),
+            Some(vec![30, 30, 30]),
+            vec![(ReadOpKind::Match, 3)],
         );
+
+        let hits = index.observed_snps(&read, 20);
+
+        assert_eq!(hits.len(), 3);
+
+        assert_eq!(hits[0].locus.name, "ref_hit");
+        assert!(hits[0].is_ref());
+        assert!(!hits[0].is_alt());
+
+        assert_eq!(hits[1].locus.name, "alt_hit");
+        assert!(!hits[1].is_ref());
+        assert!(hits[1].is_alt());
+
+        assert_eq!(hits[2].locus.name, "other_hit");
+        assert!(hits[2].is_other());
+    }
+
+    #[test]
+    fn observed_snps_respects_base_quality() {
+        let index = SnpIndex::new(
+            vec!["chrA".to_string()],
+            vec![1_000],
+            vec![locus(0, 100, b'A', b"T", "lowq", "rs1")],
+            100,
+        )
+        .unwrap();
+
+        let read = AlignedRead::new(
+            0,
+            Strand::Plus,
+            100,
+            b"A".to_vec(),
+            Some(vec![10]),
+            vec![(ReadOpKind::Match, 1)],
+        );
+
+        assert!(index.observed_snps(&read, 20).is_empty());
+        assert_eq!(index.observed_snps(&read, 10).len(), 1);
+    }
+
+    #[test]
+    fn constructor_rejects_bad_inputs() {
+        assert!(SnpIndex::new(vec![], vec![], vec![], 100).is_err());
+
+        assert!(SnpIndex::new(
+            vec!["chrA".to_string()],
+            vec![1_000],
+            vec![],
+            0,
+        )
+        .is_err());
+
+        assert!(SnpIndex::new(
+            vec!["chrA".to_string()],
+            vec![1_000],
+            vec![locus(0, 1_000, b'A', b"T", "bad", "rsBad")],
+            100,
+        )
+        .is_err());
     }
 }
