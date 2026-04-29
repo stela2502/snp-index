@@ -2,8 +2,6 @@
 //!
 //! This module converts raw VCF/BCF records into stable indexed SNP features.
 //! It does not build bins and it does not inspect reads.
-use std::fmt;
-
 use crate::vcf::RawSnpRecord;
 
 /// One indexed SNP locus.
@@ -20,34 +18,6 @@ pub struct SnpLocus {
     pub alternates: Vec<u8>,
     pub name: String,
     pub vcf_id: String,
-}
-
-
-impl fmt::Display for SnpIndex {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let first = self
-            .loci
-            .first()
-            .map(|locus| {
-                format!(
-                    "{}:{} {}>{} ({})",
-                    self.chr_names[locus.chr_id],
-                    locus.pos1(),
-                    locus.reference as char,
-                    locus.alternates.iter().map(|a| *a as char).collect::<String>(),
-                    locus.vcf_id,
-                )
-            })
-            .unwrap_or_else(|| "none".to_string());
-
-        write!(
-            f,
-            "SnpIndex: {} SNPs in {} chromosomes; first SNP: {}",
-            self.loci.len(),
-            self.chr_names.len(),
-            first
-        )
-    }
 }
 
 impl SnpLocus {

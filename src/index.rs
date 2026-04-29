@@ -70,6 +70,35 @@ pub struct SnpIndex {
     pub name_to_id: HashMap<String, u64>,
 }
 
+
+impl fmt::Display for SnpIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let first = self
+            .loci
+            .first()
+            .map(|locus| {
+                format!(
+                    "{}:{} {}>{} ({})",
+                    self.chr_names[locus.chr_id],
+                    locus.pos1(),
+                    locus.reference as char,
+                    locus.alternates.iter().map(|a| *a as char).collect::<String>(),
+                    locus.vcf_id,
+                )
+            })
+            .unwrap_or_else(|| "none".to_string());
+
+        write!(
+            f,
+            "SnpIndex: {} SNPs in {} chromosomes; first SNP: {}",
+            self.loci.len(),
+            self.chr_names.len(),
+            first
+        )
+    }
+}
+
+
 impl FeatureIndex for SnpIndex {
     /// id to name translation
     fn feature_name(&self, feature_id: u64) -> &str {
