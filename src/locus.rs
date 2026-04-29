@@ -18,6 +18,7 @@ pub struct SnpLocus {
     pub reference: u8,
     pub alternates: Vec<u8>,
     pub name: String,
+    pub vcf_id: String,
 }
 
 impl SnpLocus {
@@ -29,6 +30,7 @@ impl SnpLocus {
         reference: u8,
         alternates: Vec<u8>,
         name: String,
+        vcf_id: String
     ) -> Self {
         Self {
             id,
@@ -37,6 +39,7 @@ impl SnpLocus {
             reference,
             alternates,
             name,
+            vcf_id,
         }
     }
 
@@ -49,6 +52,7 @@ impl SnpLocus {
             raw.reference,
             raw.alternates,
             raw.name,
+            raw.vcf_id,
         )
     }
 
@@ -105,13 +109,22 @@ mod tests {
                 reference: b'C',
                 alternates: vec![b'T'],
                 name: name.to_string(),
+                vcf_id: format!("vcf_{name}"),
             }
         }
     }
 
     #[test]
     fn new_creates_locus() {
-        let locus = SnpLocus::new(7, 1, 100, b'A', vec![b'G'], "chr2:101:A>G".to_string());
+        let locus = SnpLocus::new(
+            7,
+            1,
+            100,
+            b'A',
+            vec![b'G'],
+            "chr2:101:A>G".to_string(),
+            "rs_test_7".to_string(),
+        );
 
         assert_eq!(locus.id, 7);
         assert_eq!(locus.chr_id, 1);
@@ -119,10 +132,11 @@ mod tests {
         assert_eq!(locus.reference, b'A');
         assert_eq!(locus.alternates, vec![b'G']);
         assert_eq!(locus.name, "chr2:101:A>G");
+        assert_eq!(locus.vcf_id, "rs_test_7");
     }
 
     #[test]
-    fn from_raw_assigns_id() {
+    fn from_raw_assigns_id_and_preserves_vcf_id() {
         let raw = RawSnpRecord::test_record(0, 42, "snp_a");
 
         let locus = SnpLocus::from_raw(3, raw);
@@ -131,6 +145,7 @@ mod tests {
         assert_eq!(locus.chr_id, 0);
         assert_eq!(locus.pos0, 42);
         assert_eq!(locus.name, "snp_a");
+        assert_eq!(locus.vcf_id, "vcf_snp_a");
     }
 
     #[test]
@@ -149,16 +164,19 @@ mod tests {
         assert_eq!(loci[0].chr_id, 0);
         assert_eq!(loci[0].pos0, 10);
         assert_eq!(loci[0].name, "a");
+        assert_eq!(loci[0].vcf_id, "vcf_a");
 
         assert_eq!(loci[1].id, 1);
         assert_eq!(loci[1].chr_id, 0);
         assert_eq!(loci[1].pos0, 20);
         assert_eq!(loci[1].name, "b");
+        assert_eq!(loci[1].vcf_id, "vcf_b");
 
         assert_eq!(loci[2].id, 2);
         assert_eq!(loci[2].chr_id, 1);
         assert_eq!(loci[2].pos0, 50);
         assert_eq!(loci[2].name, "c");
+        assert_eq!(loci[2].vcf_id, "vcf_c");
     }
 
     #[test]
@@ -172,9 +190,11 @@ mod tests {
 
         assert_eq!(loci[0].id, 0);
         assert_eq!(loci[0].name, "a");
+        assert_eq!(loci[0].vcf_id, "vcf_a");
 
         assert_eq!(loci[1].id, 1);
         assert_eq!(loci[1].name, "b");
+        assert_eq!(loci[1].vcf_id, "vcf_b");
     }
 
     #[test]
@@ -188,7 +208,15 @@ mod tests {
 
     #[test]
     fn allele_checks_are_case_insensitive() {
-        let locus = SnpLocus::new(0, 0, 10, b'C', vec![b'A', b'T'], "snp".to_string());
+        let locus = SnpLocus::new(
+            0,
+            0,
+            10,
+            b'C',
+            vec![b'A', b'T'],
+            "snp".to_string(),
+            "rs_snp".to_string(),
+        );
 
         assert!(locus.is_reference_base(b'C'));
         assert!(locus.is_reference_base(b'c'));

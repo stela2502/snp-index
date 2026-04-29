@@ -17,6 +17,7 @@ use std::path::Path;
 /// typically derived from the BAM header.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RawSnpRecord {
+    pub vcf_id: String,
     pub chr_id: usize,
     pub pos0: u32,
     pub reference: u8,
@@ -126,7 +127,19 @@ impl SnpVcfReader {
 
         let name = Self::record_name(record, chr_name, pos0, reference, &alternates);
 
+        let vcf_id = match std::str::from_utf8(&record.id()) {
+            Ok(s) if !s.is_empty() && s != "." => s.to_owned(),
+            _ => format!(
+                    "{}:{}:{}>{}",
+                    chr_name,
+                    pos0 + 1,
+                    reference as char,
+                    alternates.iter().map(|a| *a as char).collect::<String>()
+                 ),
+        };
+
         Ok(Some(RawSnpRecord {
+            vcf_id,
             chr_id,
             pos0,
             reference,
