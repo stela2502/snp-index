@@ -14,6 +14,7 @@ use scdata::feature_index::FeatureIndex;
 use std::collections::HashMap;
 use std::path::Path;
 use crate::RawSnpRecord;
+use crate::Strand;
 
 pub const DEFAULT_BIN_WIDTH: usize=10_000;
 
@@ -354,9 +355,14 @@ impl SnpIndex {
         };
 
         for locus in self.snps_in_range(read.chr_id, start0, end0) {
-            let Some(observed) = read.base_at_ref_pos(locus.pos0) else {
+            let Some(mut observed) = read.base_at_ref_pos(locus.pos0) else {
                 continue;
             };
+
+            // 🔥 FIX: make base genomic (forward strand)
+            if read.strand == Strand::Minus {
+                observed.base = Self::complement(observed.base);
+            }
 
             if let Some(q) = observed.qual {
                 if q < min_baseq {
@@ -370,6 +376,15 @@ impl SnpIndex {
         out
     }
 
+    fn complement(b: u8) -> u8 {
+        match b.to_ascii_uppercase() {
+            b'A' => b'T',
+            b'T' => b'A',
+            b'C' => b'G',
+            b'G' => b'C',
+            _ => b'N',
+        }
+    }
     /// Build a fuzzy chromosome name map.
     ///
     /// Examples:
