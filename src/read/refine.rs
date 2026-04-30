@@ -32,7 +32,7 @@ impl AlignedRead {
         let pairs = self.op_pairs();
 
         let pairs = self.absorb_diff_before_refskip_against_genome(&pairs, genome, options);
-        //let pairs = self.absorb_diff_after_refskip_against_genome(&pairs, genome, options);
+        let pairs = self.absorb_diff_after_refskip_against_genome(&pairs, genome, options);
 
         let pairs = if options.merge_adjacent_ops {
             Self::merge_adjacent_op_pairs(&pairs)

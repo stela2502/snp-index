@@ -234,4 +234,6 @@ mod tests {
 
         assert_eq!(locus.pos1(), 100);
     }
+
+
 }

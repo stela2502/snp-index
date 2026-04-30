@@ -615,4 +615,29 @@ mod tests {
         assert!(read.base_at_ref_pos(7_674_894 - 1).is_none());
         assert!(read.base_at_ref_pos(7_674_953 - 1).is_none());
     }
+
+    #[test]
+    fn refinement_can_relabel_match_equal_diff_without_breaking_coordinates() {
+        let mut read = AlignedRead::new(
+            0,
+            Strand::Plus,
+            100,
+            b"ACGTACGTAA".to_vec(),
+            Some(vec![30; 10]),
+            vec![(ReadOpKind::Match, 10)],
+        );
+
+        assert!(read.validate().is_ok());
+        assert_eq!(read.base_at_ref_pos(103).unwrap().base, b'T');
+
+        read.replace_ops(vec![
+            (ReadOpKind::Equal, 4),
+            (ReadOpKind::Diff, 1),
+            (ReadOpKind::Equal, 5),
+        ]);
+
+        assert!(read.validate().is_ok());
+        assert_eq!(read.base_at_ref_pos(103).unwrap().base, b'T');
+        assert_eq!(read.base_at_ref_pos(104).unwrap().base, b'A');
+    }
 }
