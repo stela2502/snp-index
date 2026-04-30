@@ -19,7 +19,6 @@ pub struct SnpLocus {
     pub name: String,
     pub vcf_id: String,
 }
-
 impl SnpLocus {
     /// Create a new SNP locus.
     pub fn new(
@@ -27,18 +26,18 @@ impl SnpLocus {
         chr_id: usize,
         pos0: u32,
         reference: u8,
-        alternates: Vec<u8>,
-        name: String,
-        vcf_id: String
+        alternates: &[u8],
+        name: &str,
+        vcf_id: &str
     ) -> Self {
         Self {
             id,
             chr_id,
             pos0,
             reference,
-            alternates,
-            name,
-            vcf_id,
+            alternates: alternates.to_vec(),
+            name: name.to_string(),
+            vcf_id: vcf_id.to_string(),
         }
     }
 
@@ -49,9 +48,9 @@ impl SnpLocus {
             raw.chr_id,
             raw.pos0,
             raw.reference,
-            raw.alternates,
-            raw.name,
-            raw.vcf_id,
+            &raw.alternates,
+            &raw.name,
+            &raw.vcf_id,
         )
     }
 
@@ -120,9 +119,9 @@ mod tests {
             1,
             100,
             b'A',
-            vec![b'G'],
-            "chr2:101:A>G".to_string(),
-            "rs_test_7".to_string(),
+            b"G",
+            "chr2:101:A>G",
+            "rs_test_7",
         );
 
         assert_eq!(locus.id, 7);
@@ -212,9 +211,9 @@ mod tests {
             0,
             10,
             b'C',
-            vec![b'A', b'T'],
-            "snp".to_string(),
-            "rs_snp".to_string(),
+            b"AT",
+            "snp",
+            "rs_snp",
         );
 
         assert!(locus.is_reference_base(b'C'));

@@ -25,6 +25,18 @@ pub struct RawSnpRecord {
     pub name: String,
 }
 
+impl RawSnpRecord{
+    pub fn new(chr_id: usize, pos0: u32, reference: u8, alternates: &[u8], name: &str, vcf_id: &str, ) -> Self {
+        Self{
+            vcf_id: vcf_id.to_string(),
+            chr_id, pos0, reference, 
+            alternates: alternates.to_vec(),
+            name: name.to_string(),
+        }
+
+    } 
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnpLocus {
     pub id: usize,

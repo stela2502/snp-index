@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::path::Path;
 use crate::RawSnpRecord;
 use crate::Strand;
+use std::fmt;
 
 pub const DEFAULT_BIN_WIDTH: usize=10_000;
 
@@ -321,23 +322,6 @@ impl SnpIndex {
         }
     }
 
-    fn locus(
-        chr_id: usize,
-        pos0: u32,
-        reference: u8,
-        alternates: &[u8],
-        name: &str,
-        vcf_id: &str,
-    ) -> RawSnpRecord {
-        RawSnpRecord {
-            chr_id,
-            pos0,
-            reference,
-            alternates: alternates.to_vec(),
-            name: name.to_string(),
-            vcf_id: vcf_id.to_string(),
-        }
-    }
 
     /// Return SNP loci actually observed by a read.
     ///
@@ -733,7 +717,7 @@ mod tests {
     use super::*;
     use crate::read::{AlignedRead, ReadOpKind, Strand};
 
-    fn locus(
+    /*fn locus(
         chr_id: usize,
         pos0: u32,
         reference: u8,
@@ -749,19 +733,19 @@ mod tests {
             name: name.to_string(),
             vcf_id: vcf_id.to_string(),
         }
-    }
+    }*/
 
     fn test_index() -> SnpIndex {
         SnpIndex::new(
             vec!["chrA".to_string(), "chrB".to_string(), "MT".to_string()],
             vec![1_000, 500, 100],
             vec![
-                locus(0, 125, b'a', b"T", "rs_geneA_125", "rsA"),
-                locus(0, 445, b'C', b"G", "rs_geneB_445", "rsB"),
-                locus(0, 545, b'G', b"T", "rs_geneC_545", "rsC"),
-                locus(0, 835, b'C', b"A", "rs_geneD_835", "rsD"),
-                locus(1, 25, b'T', b"C", "rs_chrB_25", "rsE"),
-                locus(2, 5, b'A', b"G", "rs_mt_5", "rsMT"),
+                RawSnpRecord::new( 0, 125, b'a', b"T", "rs_geneA_125", "rsA"),
+                RawSnpRecord::new( 0, 445, b'C', b"G", "rs_geneB_445", "rsB"),
+                RawSnpRecord::new( 0, 545, b'G', b"T", "rs_geneC_545", "rsC"),
+                RawSnpRecord::new( 0, 835, b'C', b"A", "rs_geneD_835", "rsD"),
+                RawSnpRecord::new( 1, 25, b'T', b"C", "rs_chrB_25", "rsE"),
+                RawSnpRecord::new( 2, 5, b'A', b"G", "rs_mt_5", "rsMT"),
             ],
             100,
         )
@@ -868,8 +852,8 @@ mod tests {
             vec!["chrA".to_string()],
             vec![1_000],
             vec![
-                locus(0, 125, b'A', b"T", "snp1", "vcf1"),
-                locus(0, 125, b'A', b"G", "snp2", "vcf2"),
+                RawSnpRecord::new(0, 125, b'A', b"T", "snp1", "vcf1"),
+                RawSnpRecord::new(0, 125, b'A', b"G", "snp2", "vcf2"),
             ],
             100,
         )
@@ -914,9 +898,9 @@ mod tests {
             vec!["chrA".to_string()],
             vec![1_000],
             vec![
-                locus(0, 100, b'A', b"T", "ref_hit", "rs1"),
-                locus(0, 101, b'C', b"T", "alt_hit", "rs2"),
-                locus(0, 102, b'G', b"A", "other_hit", "rs3"),
+                RawSnpRecord::new(0, 100, b'A', b"T", "ref_hit", "rs1"),
+                RawSnpRecord::new(0, 101, b'C', b"T", "alt_hit", "rs2"),
+                RawSnpRecord::new(0, 102, b'G', b"A", "other_hit", "rs3"),
             ],
             100,
         )
@@ -952,7 +936,7 @@ mod tests {
         let index = SnpIndex::new(
             vec!["chrA".to_string()],
             vec![1_000],
-            vec![locus(0, 100, b'A', b"T", "lowq", "rs1")],
+            vec![RawSnpRecord::new(0, 100, b'A', b"T", "lowq", "rs1")],
             100,
         )
         .unwrap();
@@ -985,9 +969,53 @@ mod tests {
         assert!(SnpIndex::new(
             vec!["chrA".to_string()],
             vec![1_000],
-            vec![locus(0, 1_000, b'A', b"T", "bad", "rsBad")],
+            vec![RawSnpRecord::new( 0, 1_000, b'A', b"T", "bad", "rsBad")],
             100,
         )
         .is_err());
+    }
+}
+
+
+impl fmt::Display for SnpIndex {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let total_bins = self.bins.len();
+        let non_empty_bins = self
+            .bins
+            .iter()
+            .filter(|bin| !bin.locus_ids.is_empty())
+            .count();
+
+        writeln!(
+            f,
+            "SnpIndex: {} SNPs in {} chromosomes; bin_width={}; bins={}/{} non-empty",
+            self.loci.len(),
+            self.chr_info.len(),
+            self.bin_width,
+            non_empty_bins,
+            total_bins
+        )?;
+
+        if let Some(first) = self.loci.first() {
+            let chr = self.chr_name(first.chr_id).unwrap_or("?");
+            let alt = first
+                .alternates
+                .iter()
+                .map(|b| (*b as char).to_string())
+                .collect::<Vec<_>>()
+                .join(",");
+
+            writeln!(
+                f,
+                "first SNP: {}:{} {}>{} ({})",
+                chr,
+                first.pos0 + 1,
+                first.reference as char,
+                alt,
+                first.name
+            )?;
+        }
+
+        Ok(())
     }
 }
