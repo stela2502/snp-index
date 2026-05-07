@@ -206,9 +206,9 @@ mod tests {
                 0,
                 Strand::Plus,
                 100,
-                seq.to_vec(),
+                seq,
                 Some(vec![30; seq.len()]),
-                pairs,
+                &pairs,
             )
         }
     }

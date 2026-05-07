@@ -13,7 +13,8 @@ categories = ["science", "data-structures"]
 [dependencies]
 anyhow = "1.0.102"
 flate2 = "1"
-gtf_splice_index = "0.4.0"
+#gtf_splice_index = "0.4.0"
+gtf_splice_index = { git = "https://github.com/stela2502/gtf_splice_index" }
 mapping_info = "0.1.0"
 rust-htslib = { git = "https://github.com/stela2502/rust-htslib.git", default-features = false }
 #scdata = { git = "https://github.com/stela2502/scdata" }

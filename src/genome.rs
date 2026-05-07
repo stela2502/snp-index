@@ -263,13 +263,13 @@ mod tests {
 
     fn make_read(
         seq: &[u8],
-        pairs: Vec<(ReadOpKind, u32)>,
+        pairs: &[(ReadOpKind, u32)],
     ) -> AlignedRead {
         AlignedRead::new(
             0,
             Strand::Plus,
             0,
-            seq.to_vec(),
+            seq,
             Some(vec![30; seq.len()]),
             pairs,
         )
@@ -279,7 +279,7 @@ mod tests {
     fn base_at_ref_pos_simple() {
         let read = make_read(
             b"ACGT",
-            vec![(ReadOpKind::Match, 4)],
+            &[(ReadOpKind::Match, 4)],
         );
 
         // Assuming default pos0 = 0
@@ -291,7 +291,7 @@ mod tests {
     fn base_at_ref_pos_softclip() {
         let read = make_read(
             b"NNNNACGT",
-            vec![
+            &[
                 (ReadOpKind::SoftClip, 4),
                 (ReadOpKind::Match, 4),
             ],
@@ -305,7 +305,7 @@ mod tests {
     fn base_at_ref_pos_splice() {
         let read = make_read(
             b"AAAACCCC",
-            vec![
+            &[
                 (ReadOpKind::Match, 4),
                 (ReadOpKind::RefSkip, 100),
                 (ReadOpKind::Match, 4),
@@ -326,7 +326,7 @@ mod tests {
     fn base_at_ref_pos_insertion() {
         let read = make_read(
             b"AACGT",
-            vec![
+            &[
                 (ReadOpKind::Match, 2),
                 (ReadOpKind::Ins, 1),
                 (ReadOpKind::Match, 2),

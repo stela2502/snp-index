@@ -152,11 +152,11 @@ impl AlignedRead {
         chr_id: usize,
         strand: Strand,
         ref_start0: u32,
-        seq: Vec<u8>,
+        seq: &[u8],
         qual: Option<Vec<u8>>,
-        ops_input: Vec<(ReadOpKind, u32)>,
+        ops_input: &[(ReadOpKind, u32)],
     ) -> Self {
-        let ops = Self::build_positioned_ops(ref_start0, &ops_input);
+        let ops = Self::build_positioned_ops(ref_start0, ops_input);
 
         Self {
             chr_id,
@@ -205,9 +205,9 @@ impl AlignedRead {
             chr_id,
             strand,
             record.pos() as u32,
-            record.seq().as_bytes(),
+            &record.seq().as_bytes(),
             Some(record.qual().to_vec()),
-            Self::cigar_to_read_ops(&record.cigar()),
+            &Self::cigar_to_read_ops(&record.cigar()),
         )
     }
 
@@ -364,7 +364,7 @@ impl AlignedRead {
     }
 
     /// Uppercase sequence bases.
-    pub fn uppercase_seq(seq: Vec<u8>) -> Vec<u8> {
+    pub fn uppercase_seq(seq: &[u8]) -> Vec<u8> {
         seq.into_iter().map(|b| b.to_ascii_uppercase()).collect()
     }
 }
@@ -382,9 +382,9 @@ mod tests {
                 0,
                 Strand::Plus,
                 100,
-                b"ACGTACGTAA".to_vec(),
+                b"ACGTACGTAA",
                 Some(vec![30; 10]),
-                vec![(ReadOpKind::Match, 10)],
+                &[(ReadOpKind::Match, 10)],
             )
         }
     }
@@ -423,9 +423,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"ACGT".to_vec(),
+            b"ACGT",
             Some(vec![30; 3]),
-            vec![(ReadOpKind::Match, 4)],
+            &[(ReadOpKind::Match, 4)],
         );
 
         assert!(read.validate().is_err());
@@ -437,9 +437,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"ACGT".to_vec(),
+            b"ACGT",
             None,
-            vec![(ReadOpKind::Match, 3)],
+            &[(ReadOpKind::Match, 3)],
         );
 
         assert!(read.validate().is_err());
@@ -451,9 +451,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"AAAAATTTTT".to_vec(),
+            b"AAAAATTTTT",
             None,
-            vec![
+            &[
                 (ReadOpKind::SoftClip, 5),
                 (ReadOpKind::Match, 5),
                 (ReadOpKind::RefSkip, 100),
@@ -487,9 +487,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"AAAAACCCCC".to_vec(),
+            b"AAAAACCCCC",
             Some(vec![40; 10]),
-            vec![
+            &[
                 (ReadOpKind::Match, 5),
                 (ReadOpKind::Del, 3),
                 (ReadOpKind::RefSkip, 100),
@@ -523,9 +523,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"CCCCCCCCCCTGGGGGGGGGG".to_vec(),
+            b"CCCCCCCCCCTGGGGGGGGGG",
             Some(vec![30; 21]),
-            vec![
+            &[
                 (ReadOpKind::Match, 10),
                 (ReadOpKind::Diff, 1),
                 (ReadOpKind::Match, 10),
@@ -547,9 +547,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"CCCCCCCCCCGGGGGGGGGG".to_vec(),
+            b"CCCCCCCCCCGGGGGGGGGG",
             Some(vec![30; 20]),
-            vec![
+            &[
                 (ReadOpKind::Match, 10),
                 (ReadOpKind::RefSkip, 100),
                 (ReadOpKind::Match, 5),
@@ -583,9 +583,9 @@ mod tests {
             0,
             Strand::Minus,
             7_359_184, // SAM POS 7359185 -> 0-based
-            vec![b'A'; 768],
+            &[b'A'; 768],
             Some(vec![30; 768]),
-            vec![
+            &[
                 (ReadOpKind::SoftClip, 24),
                 (ReadOpKind::Match, 35),
                 (ReadOpKind::Del, 5),
@@ -622,9 +622,9 @@ mod tests {
             0,
             Strand::Plus,
             100,
-            b"ACGTACGTAA".to_vec(),
+            b"ACGTACGTAA",
             Some(vec![30; 10]),
-            vec![(ReadOpKind::Match, 10)],
+            &[(ReadOpKind::Match, 10)],
         );
 
         assert!(read.validate().is_ok());
@@ -640,4 +640,7 @@ mod tests {
         assert_eq!(read.base_at_ref_pos(103).unwrap().base, b'T');
         assert_eq!(read.base_at_ref_pos(104).unwrap().base, b'A');
     }
+
+
+        
 }

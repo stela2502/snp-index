@@ -188,9 +188,9 @@ fn make_linear_read(start0: u32, len: u32, edits: &[(u32, u8)]) -> AlignedRead {
         0,
         Strand::Plus,
         start0,
-        seq,
+        &seq,
         Some(vec![30; len as usize]),
-        vec![(ReadOpKind::Match, len)],
+        &[(ReadOpKind::Match, len)],
     )
 }
 
@@ -216,9 +216,9 @@ fn make_spliced_read_around_210(base_at_210: u8) -> AlignedRead {
         0,
         Strand::Plus,
         100,
-        seq,
+        &seq,
         Some(vec![30; 20]),
-        vec![
+        &[
             (ReadOpKind::Match, 10),
             (ReadOpKind::RefSkip, 100),
             (ReadOpKind::Match, 10),
